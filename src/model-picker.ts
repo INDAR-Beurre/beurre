@@ -1,14 +1,16 @@
 import readline from 'node:readline';
-import { relay, type RelayModel, type RelayProvider } from './relay.ts';
+import { relay, type RelayModel, type RelayProvider, getModelDisplayName } from './relay.ts';
 import { b, colors, ButterSpinner, renderToast } from './theme.ts';
 
 export function filterModelList(models: RelayModel[], query: string): RelayModel[] {
   if (!query) return models;
   const q = query.toLowerCase().trim();
   return models.filter((m) => {
+    const disp = getModelDisplayName(m.id, models);
     return (
       m.id.toLowerCase().includes(q) ||
       (m.name && m.name.toLowerCase().includes(q)) ||
+      (disp && disp.toLowerCase().includes(q)) ||
       (m.owned_by && m.owned_by.toLowerCase().includes(q))
     );
   });
@@ -109,25 +111,35 @@ export async function openModelPicker(
         const pointer = isSelected ? `${colors.butterGold}🧈 ❯${colors.reset} ` : '     ';
         const activeBadge = isCurrent ? ` ${colors.green}${colors.bold}[ACTIVE]${colors.reset}` : '';
 
-        let modelLabelText = m.id;
-        if (filterQuery && m.id.toLowerCase().includes(filterQuery.toLowerCase())) {
-          const matchIdx = m.id.toLowerCase().indexOf(filterQuery.toLowerCase());
-          const before = m.id.slice(0, matchIdx);
-          const match = m.id.slice(matchIdx, matchIdx + filterQuery.length);
-          const after = m.id.slice(matchIdx + filterQuery.length);
-          modelLabelText = `${before}${colors.butterGold}${colors.underline}${match}${colors.reset}${isSelected ? colors.butterCream : ''}${after}`;
+        const displayName = getModelDisplayName(m.id, models);
+        const hasCustomName = displayName !== m.id;
+        const fullLabel = hasCustomName ? `${displayName} (${m.id})` : m.id;
+
+        let formattedLabel = '';
+        if (filterQuery && fullLabel.toLowerCase().includes(filterQuery.toLowerCase())) {
+          const matchIdx = fullLabel.toLowerCase().indexOf(filterQuery.toLowerCase());
+          const before = fullLabel.slice(0, matchIdx);
+          const match = fullLabel.slice(matchIdx, matchIdx + filterQuery.length);
+          const after = fullLabel.slice(matchIdx + filterQuery.length);
+          formattedLabel = `${before}${colors.butterGold}${colors.underline}${match}${colors.reset}${after}`;
+        } else {
+          formattedLabel = hasCustomName
+            ? `${colors.bold}${colors.butterCream}${displayName}${colors.reset} ${colors.dim}(${m.id})${colors.reset}`
+            : `${colors.bold}${m.id}${colors.reset}`;
         }
 
         const modelLabel = isSelected
-          ? `${colors.bold}${colors.butterCream}${modelLabelText}${colors.reset}`
-          : `${colors.bold}${modelLabelText}${colors.reset}`;
+          ? `${colors.bold}${colors.butterGold}${formattedLabel}${colors.reset}`
+          : formattedLabel;
 
-        const modelPad = Math.max(1, 28 - stripAnsi(modelLabel).length);
+        const modelPad = Math.max(1, 38 - stripAnsi(modelLabel).length);
 
         const ctxTag = m.context_length
           ? `${colors.cyan}${Math.round(m.context_length / 1000)}k ctx${colors.reset}`
           : '';
-        const reasonTag = m.reasoning ? `${colors.butterPale}🧠 reasoning${colors.reset}` : '';
+        const reasonTag = m.reasoning_efforts && m.reasoning_efforts.length > 0
+          ? `${colors.butterPale}🧠 ${m.reasoning_efforts.slice(0, 3).join(',')}${colors.reset}`
+          : (m.reasoning ? `${colors.butterPale}🧠 reasoning${colors.reset}` : '');
         const providerTag = m.owned_by ? `${colors.dim}via ${m.owned_by}${colors.reset}` : '';
 
         const tags = [ctxTag, reasonTag, providerTag].filter(Boolean).join(' • ');
@@ -293,8 +305,10 @@ async function openModelPickerFallback(
     });
   };
 
-  models.slice(0, 10).forEach((m, idx) => {
-    console.log(`[${idx + 1}] ${m.id}`);
+  models.slice(0, 15).forEach((m, idx) => {
+    const displayName = getModelDisplayName(m.id, models);
+    const label = displayName !== m.id ? `${displayName} (${m.id})` : m.id;
+    console.log(`[${idx + 1}] ${label}`);
   });
   const input = await ask('Select model number or ID: ');
   const num = parseInt(input, 10);

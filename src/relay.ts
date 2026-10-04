@@ -12,6 +12,7 @@ export interface RelayModel {
   context_length?: number;
   max_completion_tokens?: number;
   reasoning?: boolean;
+  reasoning_efforts?: string[];
   capabilities?: string[];
   input_modalities?: string[];
   output_modalities?: string[];
@@ -42,6 +43,7 @@ export interface ChatMessage {
 
 export interface ChatCompletionOptions {
   model?: string;
+  effort?: string;
   messages: ChatMessage[];
   tools?: any[];
   temperature?: number;
@@ -51,17 +53,209 @@ export interface ChatCompletionOptions {
   onReasoning?: (reasoning: string) => void;
 }
 
+export interface ToolCallItem {
+  id: string;
+  name: string;
+  arguments: Record<string, any>;
+  rawArguments: string;
+}
+
 export interface ChatCompletionResult {
   content: string;
   reasoning: string;
-  toolCalls: Array<{
-    id: string;
-    name: string;
-    arguments: Record<string, any>;
-    rawArguments: string;
-  }>;
+  toolCalls: ToolCallItem[];
   model: string;
   finishReason?: string;
+}
+
+const KNOWN_MODEL_NAMES: Record<string, string> = {
+  'claude-opus-5-5': 'Claude Opus 5.5',
+  'claude-opus-4-8': 'Claude Opus 4.8',
+  'claude-opus-5': 'Claude Opus 5',
+  'claude-sonnet-5-5': 'Claude Sonnet 5.5',
+  'claude-sonnet-4-6': 'Claude Sonnet 4.6',
+  'claude-fable-5-1': 'Claude Fable 5.1',
+  'claude-3-7-sonnet': 'Claude 3.7 Sonnet',
+  'claude-3-5-sonnet': 'Claude 3.5 Sonnet',
+  'claude-3-5-haiku': 'Claude 3.5 Haiku',
+  'gpt-6-astra': 'GPT-6 Astra',
+  'gpt-6-luna': 'GPT-6 Luna',
+  'gpt-5-5': 'GPT-5.5',
+  'gpt-5-6-sol': 'GPT-5.6 Sol',
+  'gpt-4o': 'GPT-4o Omnimodal',
+  'glm-5-3-flash': 'GLM 5.3 Flash',
+  'glm-5-3': 'GLM 5.3',
+  'kimi-k3': 'Kimi K3',
+  'kimi-k3:max': 'Kimi K3 (Max)',
+  'o3-mini': 'o3-mini',
+  'o1': 'o1',
+  'deepseek-v4-1-flash': 'DeepSeek v4.1 Flash',
+  'deepseek-r1': 'DeepSeek R1',
+  'deepseek-v3': 'DeepSeek V3',
+  'gemini-3-8-flash': 'Gemini 3.8 Flash',
+  'gemini-2.5-pro': 'Gemini 2.5 Pro',
+  'gemini-2.5-flash': 'Gemini 2.5 Flash',
+  'qwen3-8-flash': 'Qwen 3.8 Flash',
+  'qwen3-8-max': 'Qwen 3.8 Max',
+  'mimo-v2-6-pro': 'Mimo v2.6 Pro',
+  'atria-dawn': 'Atria Dawn',
+};
+
+export function getModelDisplayName(modelId: string, modelList?: RelayModel[]): string {
+  const cleanId = modelId.split(':')[0];
+  if (modelList) {
+    const found = modelList.find((m) => m.id === modelId || m.id === cleanId);
+    if (found?.name) return found.name;
+  }
+  if (KNOWN_MODEL_NAMES[modelId]) return KNOWN_MODEL_NAMES[modelId];
+  if (KNOWN_MODEL_NAMES[cleanId]) return KNOWN_MODEL_NAMES[cleanId];
+
+  return cleanId
+    .split('-')
+    .map((word) => {
+      if (/^\d+(\.\d+)?$/.test(word)) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(' ');
+}
+
+export function extractToolCallsFromContent(content: string): {
+  toolCalls: ToolCallItem[];
+  cleanedContent: string;
+} {
+  const toolCalls: ToolCallItem[] = [];
+  let cleaned = content;
+
+  // 1. Match XML <tool_call> ... </tool_call>
+  const xmlToolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = xmlToolCallRegex.exec(content)) !== null) {
+    const block = match[1].trim();
+    cleaned = cleaned.replace(match[0], '');
+
+    const nameMatch = block.match(/<name>([a-zA-Z0-9_-]+)<\/name>/i);
+    const argsMatch = block.match(/<arguments>([\s\S]*?)<\/arguments>/i);
+
+    if (nameMatch) {
+      const toolName = nameMatch[1].trim();
+      const rawArgs = argsMatch ? argsMatch[1].trim() : '{}';
+      let parsedArgs: Record<string, any> = {};
+      try {
+        parsedArgs = JSON.parse(rawArgs);
+      } catch {
+        parsedArgs = { raw: rawArgs };
+      }
+      toolCalls.push({
+        id: `call_${Math.random().toString(36).slice(2, 9)}`,
+        name: toolName,
+        arguments: parsedArgs,
+        rawArguments: rawArgs,
+      });
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(block);
+      const name = parsed.name || parsed.tool || parsed.action;
+      const args = parsed.arguments || parsed.parameters || parsed.action_input || parsed.args || {};
+      if (name) {
+        toolCalls.push({
+          id: `call_${Math.random().toString(36).slice(2, 9)}`,
+          name,
+          arguments: typeof args === 'string' ? JSON.parse(args) : args,
+          rawArguments: JSON.stringify(args),
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2. Match Markdown code block ```tool_call ... ```
+  const mdToolCallRegex = /```(?:tool_call|tool-call|tool_calls|json:tool)\s*\n([\s\S]*?)```/gi;
+  while ((match = mdToolCallRegex.exec(content)) !== null) {
+    const block = match[1].trim();
+    cleaned = cleaned.replace(match[0], '');
+    try {
+      const parsed = JSON.parse(block);
+      const name = parsed.name || parsed.tool || parsed.action;
+      const args = parsed.arguments || parsed.parameters || parsed.action_input || parsed.args || {};
+      if (name) {
+        toolCalls.push({
+          id: `call_${Math.random().toString(36).slice(2, 9)}`,
+          name,
+          arguments: typeof args === 'string' ? JSON.parse(args) : args,
+          rawArguments: JSON.stringify(args),
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 3. Match Anthropic style <invoke name="..."> ... </invoke>
+  const invokeRegex = /<invoke\s+name="([a-zA-Z0-9_-]+)"\s*>([\s\S]*?)<\/invoke>/gi;
+  while ((match = invokeRegex.exec(content)) !== null) {
+    const name = match[1].trim();
+    const body = match[2].trim();
+    cleaned = cleaned.replace(match[0], '');
+
+    const args: Record<string, any> = {};
+    const paramRegex = /<parameter\s+name="([a-zA-Z0-9_-]+)"\s*>([\s\S]*?)<\/parameter>/gi;
+    let paramMatch: RegExpExecArray | null;
+    let foundParams = false;
+    while ((paramMatch = paramRegex.exec(body)) !== null) {
+      foundParams = true;
+      const pName = paramMatch[1].trim();
+      const pVal = paramMatch[2].trim();
+      try {
+        args[pName] = JSON.parse(pVal);
+      } catch {
+        args[pName] = pVal;
+      }
+    }
+    if (!foundParams && body) {
+      try {
+        Object.assign(args, JSON.parse(body));
+      } catch {
+        args.raw = body;
+      }
+    }
+    toolCalls.push({
+      id: `call_${Math.random().toString(36).slice(2, 9)}`,
+      name,
+      arguments: args,
+      rawArguments: JSON.stringify(args),
+    });
+  }
+
+  cleaned = cleaned.replace(/<function_calls>|<\/function_calls>/gi, '').trim();
+
+  // 4. Fallback: single JSON block with tool/action
+  if (toolCalls.length === 0) {
+    const stripped = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    const jsonMatch = stripped.match(/\{[\s\S]*"(tool|name|action)"\s*:\s*"([a-zA-Z0-9_-]+)"[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        const toolName = parsed.tool || parsed.name || parsed.action;
+        const toolArgs = parsed.arguments || parsed.parameters || parsed.action_input || parsed.args || {};
+        if (toolName) {
+          toolCalls.push({
+            id: `call_${Math.random().toString(36).slice(2, 9)}`,
+            name: toolName,
+            arguments: typeof toolArgs === 'string' ? JSON.parse(toolArgs) : toolArgs,
+            rawArguments: JSON.stringify(toolArgs),
+          });
+          cleaned = cleaned.replace(jsonMatch[0], '').trim();
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  return { toolCalls, cleanedContent: cleaned.trim() };
 }
 
 export class RelayClient {
@@ -169,6 +363,48 @@ export class RelayClient {
     return `[Relay web search unavailable or timed out for query: "${query}"]`;
   }
 
+  async generateImage(
+    prompt: string,
+    options: { size?: string; model?: string } = {}
+  ): Promise<{ url?: string; b64?: string; error?: string }> {
+    const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl].filter(Boolean);
+    const model = options.model || 'dall-e-3';
+    const size = options.size || '1024x1024';
+
+    for (const baseUrl of endpoints) {
+      try {
+        const res = await fetch(`${baseUrl}/images/generations`, {
+          method: 'POST',
+          headers: this.getAuthHeaders(),
+          body: JSON.stringify({
+            prompt,
+            model,
+            n: 1,
+            size,
+            response_format: 'b64_json',
+          }),
+          signal: AbortSignal.timeout(30000),
+        });
+
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          const item = data.data?.[0];
+          if (item) {
+            return {
+              url: item.url,
+              b64: item.b64_json,
+            };
+          }
+        }
+      } catch {
+        // try fallback
+      }
+    }
+    return {
+      error: 'Image generation endpoint unavailable or timed out on relay gateway',
+    };
+  }
+
   async syncSessionToWeb(sessionData: {
     id: string;
     title: string;
@@ -216,6 +452,24 @@ export class RelayClient {
           stream: true,
         };
 
+        // Reasoning effort handling
+        const effort = options.effort || (model.includes(':') ? model.split(':')[1] : undefined);
+        if (effort) {
+          payload.reasoning_effort = effort;
+          const lowerModel = model.toLowerCase();
+          if (lowerModel.includes('claude') || lowerModel.includes('opus') || lowerModel.includes('sonnet')) {
+            const budgetMap: Record<string, number> = {
+              max: 64000,
+              xhigh: 32000,
+              high: 16000,
+              medium: 8000,
+              low: 2000,
+            };
+            const budget = budgetMap[effort.toLowerCase()] || 8000;
+            payload.thinking = { type: 'enabled', budget_tokens: budget };
+          }
+        }
+
         if (options.tools && options.tools.length > 0) {
           payload.tools = options.tools;
           payload.tool_choice = 'auto';
@@ -227,12 +481,40 @@ export class RelayClient {
           payload.temperature = options.temperature;
         }
 
-        const res = await fetch(`${baseUrl}/chat/completions`, {
+        let res = await fetch(`${baseUrl}/chat/completions`, {
           method: 'POST',
           headers: this.getAuthHeaders(),
           body: JSON.stringify(payload),
           signal: options.signal,
         });
+
+        // Chat-proxied fallback: if upstream returns 400 Bad Request and tools were present,
+        // retry without tools because web-chat proxies (e.g. claude-opus-5-5) often reject OpenAI tools schema
+        if (!res.ok && res.status === 400 && payload.tools) {
+          const fallbackPayload: Record<string, any> = { ...payload };
+          delete fallbackPayload.tools;
+          delete fallbackPayload.tool_choice;
+          if (fallbackPayload.messages && Array.isArray(fallbackPayload.messages)) {
+            fallbackPayload.messages = fallbackPayload.messages.map((m: any) => {
+              if (m.role === 'tool') {
+                return {
+                  role: 'user',
+                  content: `<tool_response name="${m.name || 'tool'}">\n${m.content}\n</tool_response>`,
+                };
+              }
+              return m;
+            });
+          }
+          const retryRes = await fetch(`${baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: this.getAuthHeaders(),
+            body: JSON.stringify(fallbackPayload),
+            signal: options.signal,
+          });
+          if (retryRes.ok) {
+            res = retryRes;
+          }
+        }
 
         if (!res.ok) {
           const errText = await res.text().catch(() => '');
@@ -357,26 +639,13 @@ export class RelayClient {
           };
         });
 
-        // Fallback: If no native tool_calls were emitted, check if model output JSON tool call in content
+        // Tool-call parsing fallback: If no native tool_calls were emitted, extract from content
+        // This handles chat-proxied models (e.g. claude-opus-5-5, claude-opus-4-8) that emit XML or JSON tool calls
         if (toolCalls.length === 0 && content) {
-          const stripped = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-          const match = stripped.match(/\{[\s\S]*"(tool|name|action)"\s*:\s*"([a-zA-Z0-9_-]+)"[\s\S]*\}/);
-          if (match) {
-            try {
-              const parsed = JSON.parse(match[0]);
-              const toolName = parsed.tool || parsed.name || parsed.action;
-              const toolArgs = parsed.arguments || parsed.parameters || parsed.action_input || parsed.args || {};
-              if (toolName) {
-                toolCalls.push({
-                  id: `call_${Math.random().toString(36).slice(2, 9)}`,
-                  name: toolName,
-                  arguments: toolArgs,
-                  rawArguments: JSON.stringify(toolArgs),
-                });
-              }
-            } catch {
-              // ignore
-            }
+          const { toolCalls: extracted, cleanedContent } = extractToolCallsFromContent(content);
+          if (extracted.length > 0) {
+            toolCalls.push(...extracted);
+            content = cleanedContent;
           }
         }
 

@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { execSync, spawnSync } from 'node:child_process';
 import { BeurreAgent } from './agent.ts';
-import { relay } from './relay.ts';
+import { relay, getModelDisplayName } from './relay.ts';
 import { listSubagents, runNamedSubagent } from './subagents.ts';
 import { compactMessages } from './compact.ts';
 import { BeurreLoopRunner } from './loop.ts';
@@ -15,23 +18,55 @@ import {
   ButterSpinner,
   formatClaudeToolCall,
   formatClaudeToolResult,
+  formatUserMessageCard,
+  formatAgentHeader,
   renderErrorCard,
   renderToast,
 } from './theme.ts';
 import { SLASH_COMMANDS, getPredictiveMatches, formatPredictiveHints } from './predictive.ts';
 
+export function copyToClipboard(text: string): boolean {
+  try {
+    const base64 = Buffer.from(text, 'utf-8').toString('base64');
+    process.stdout.write(`\x1b]52;c;${base64}\x07`);
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (process.platform === 'linux') {
+      if (process.env.WAYLAND_DISPLAY) {
+        spawnSync('wl-copy', [], { input: text });
+        return true;
+      }
+      spawnSync('xclip', ['-selection', 'clipboard'], { input: text });
+      return true;
+    } else if (process.platform === 'darwin') {
+      spawnSync('pbcopy', [], { input: text });
+      return true;
+    } else if (process.platform === 'win32') {
+      spawnSync('clip', [], { input: text });
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return true;
+}
+
 export async function startRepl(initialModel?: string): Promise<void> {
   const agent = new BeurreAgent({ model: initialModel });
-  const editor = new BeurreEditor(['/menu', '/models', '/subagents', '/loop', '/help']);
+  const editor = new BeurreEditor(['/menu', '/models', '/effort', '/copy', '/diff', '/subagents', '/loop', '/help']);
 
   // Initial banner
   console.clear();
-  console.log(banner('1.0.0', agent.getModel(), agent.getCwd()));
+  console.log(banner('1.0.0', agent.getModel(), agent.getCwd(), agent.getEffort()));
 
   let totalTokensEstimate = 0;
   let activeAbortController: AbortController | null = null;
   let thinkingMode: 'expanded' | 'collapsed' | 'hidden' = 'expanded';
   let lastReasoning = '';
+  let lastAssistantResponse = '';
 
   // Graceful interrupt handling for active turns
   const onSigInt = () => {
@@ -221,10 +256,136 @@ export async function startRepl(initialModel?: string): Promise<void> {
           break;
         }
 
+        case '/effort': {
+          if (!rest) {
+            console.log(`\n${b.bold('Active Reasoning Effort:')} ${b.badge(agent.getEffort().toUpperCase())}`);
+            console.log(`  ${colors.dim}Available efforts: max, xhigh, high, medium, low${colors.reset}`);
+            console.log(`  ${colors.dim}Usage: /effort <max|high|medium|low>${colors.reset}\n`);
+          } else {
+            const valid = ['max', 'xhigh', 'high', 'medium', 'low'];
+            const chosen = rest.toLowerCase();
+            if (!valid.includes(chosen)) {
+              console.log(`\n${b.red('Invalid effort:')} "${rest}". Choose from: ${valid.join(', ')}\n`);
+            } else {
+              agent.setEffort(chosen);
+              console.log(`\n${renderToast(`Reasoning effort set to: ${chosen.toUpperCase()}`, true)}\n`);
+            }
+          }
+          break;
+        }
+
+        case '/copy': {
+          if (!lastAssistantResponse) {
+            console.log(`\n${renderToast('No assistant response to copy yet in this session.', false)}\n`);
+          } else {
+            copyToClipboard(lastAssistantResponse);
+            console.log(`\n${renderToast('Last assistant response copied to clipboard!', true)}\n`);
+          }
+          break;
+        }
+
+        case '/diff': {
+          try {
+            const diffOutput = execSync('git diff HEAD 2>/dev/null', {
+              cwd: agent.getCwd(),
+              encoding: 'utf-8',
+              timeout: 5000,
+            }).trim();
+            if (!diffOutput) {
+              console.log(`\n${renderToast('No git changes in working tree (clean repository)', true)}\n`);
+            } else {
+              console.log(`\n${colors.bold}${colors.butterGold}🧈 Git Working Tree Diff:${colors.reset}\n`);
+              const highlighted = diffOutput.split('\n').map((line) => {
+                if (line.startsWith('+++') || line.startsWith('---')) return `${colors.dim}${line}${colors.reset}`;
+                if (line.startsWith('+')) return `${colors.green}${line}${colors.reset}`;
+                if (line.startsWith('-')) return `${colors.red}${line}${colors.reset}`;
+                if (line.startsWith('@@')) return `${colors.cyan}${line}${colors.reset}`;
+                return `${colors.gray}${line}${colors.reset}`;
+              }).join('\n');
+              console.log(highlighted + '\n');
+            }
+          } catch (err: any) {
+            console.log(renderErrorCard('Git Diff Error', err.message));
+          }
+          break;
+        }
+
+        case '/export': {
+          const defaultPath = path.join(agent.getCwd(), `beurre-session-${new Date().toISOString().slice(0, 10)}.md`);
+          const exportPath = rest ? path.resolve(agent.getCwd(), rest) : defaultPath;
+          const msgs = agent.getMessages();
+          const mdLines = [
+            `# 🧈 Beurre Session Export`,
+            `_Session ID: ${agent.getSessionId()} | Model: ${getModelDisplayName(agent.getModel())} (${agent.getModel()}) | Effort: ${agent.getEffort()} | Exported: ${new Date().toLocaleString()}_`,
+            '',
+          ];
+          for (const m of msgs) {
+            if (m.role === 'system') continue;
+            if (m.role === 'user') {
+              mdLines.push(`## 👤 User\n\n${m.content}\n`);
+            } else if (m.role === 'assistant') {
+              mdLines.push(`## 🧈 Beurre (${getModelDisplayName(agent.getModel())})\n\n${m.content}\n`);
+            } else if (m.role === 'tool') {
+              mdLines.push(`> **Tool Result (${m.name || 'tool'})**:\n\`\`\`\n${m.content.slice(0, 500)}\n\`\`\`\n`);
+            }
+          }
+          try {
+            fs.writeFileSync(exportPath, mdLines.join('\n'), 'utf-8');
+            console.log(`\n${renderToast(`Session exported successfully to: ${exportPath}`, true)}\n`);
+          } catch (err: any) {
+            console.log(renderErrorCard('Export Error', err.message));
+          }
+          break;
+        }
+
+        case '/usage': {
+          const msgs = agent.getMessages();
+          let userChars = 0;
+          let assistantChars = 0;
+          let toolChars = 0;
+          for (const m of msgs) {
+            if (m.role === 'user') userChars += m.content?.length || 0;
+            else if (m.role === 'assistant') userChars += m.content?.length || 0;
+            else if (m.role === 'tool') toolChars += m.content?.length || 0;
+          }
+          const totalEstTokens = Math.round((userChars + assistantChars + toolChars) / 4);
+          const modelName = getModelDisplayName(agent.getModel());
+          console.log(`\n${colors.butterGold}╭── 🧈 Session Usage & Context Breakdown ────────────────────────╮${colors.reset}`);
+          console.log(`  ${b.bold('Active Model:')}     ${b.cream(modelName)} ${b.dim(`(${agent.getModel()})`)}`);
+          console.log(`  ${b.bold('Reasoning Effort:')} ${b.gold(agent.getEffort().toUpperCase())}`);
+          console.log(`  ${b.bold('Session Messages:')} ${b.cream(msgs.length)} turns`);
+          console.log(`  ${b.bold('Estimated Tokens:')} ${b.gold(`~${totalEstTokens.toLocaleString()} tokens`)}`);
+          console.log(`  ${b.bold('Message Ratio:')}    ${b.dim(`User: ~${Math.round(userChars/4)} tok • Assistant: ~${Math.round(assistantChars/4)} tok • Tools: ~${Math.round(toolChars/4)} tok`)}`);
+          console.log(`  ${b.bold('Relay Status:')}     ${b.green('● LIVE (relay-gw.pages.dev)')}`);
+          console.log(`${colors.butterGold}╰────────────────────────────────────────────────────────────────╯${colors.reset}\n`);
+          break;
+        }
+
+        case '/undo': {
+          const msgs = agent.getMessages();
+          let lastUserIdx = -1;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'user') {
+              lastUserIdx = i;
+              break;
+            }
+          }
+          if (lastUserIdx === -1) {
+            console.log(`\n${renderToast('No user interaction turns to undo.', false)}\n`);
+          } else {
+            const removedCount = msgs.length - lastUserIdx;
+            agent.setMessages(msgs.slice(0, lastUserIdx));
+            console.log(`\n${renderToast(`Reverted last turn (${removedCount} messages removed)`, true)}\n`);
+          }
+          break;
+        }
+
         case '/history': {
           const msgs = agent.getMessages();
+          const modelName = getModelDisplayName(agent.getModel());
           console.log(`\n${b.bold('Session ID:')}     ${b.gold(agent.getSessionId())}`);
-          console.log(`  ${b.bold('Active Model:')}   ${b.gold(agent.getModel())}`);
+          console.log(`  ${b.bold('Active Model:')}   ${b.gold(modelName)} ${b.dim(`(${agent.getModel()})`)}`);
+          console.log(`  ${b.bold('Effort Level:')}   ${b.gold(agent.getEffort().toUpperCase())}`);
           console.log(`  ${b.bold('Total Messages:')} ${b.gold(msgs.length)}`);
           console.log(`  ${b.bold('Est. Tokens:')}    ${b.gold(totalTokensEstimate)}\n`);
           break;
@@ -232,7 +393,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
         case '/clear': {
           console.clear();
-          console.log(banner('1.0.0', agent.getModel(), agent.getCwd()));
+          console.log(banner('1.0.0', agent.getModel(), agent.getCwd(), agent.getEffort()));
           break;
         }
 
@@ -257,7 +418,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
     }
 
     // Normal Turn Execution with Streaming, Thinking Blocks, Diffs & Clean Error Recovery
-    console.log(`\n${colors.butterGold}${colors.bold}🧈 you${colors.reset} ${colors.dim}❯${colors.reset} ${colors.butterCream}${trimmed}${colors.reset}\n`);
+    console.log(formatUserMessageCard(trimmed));
 
     activeAbortController = new AbortController();
     const spinner = new ButterSpinner();
@@ -268,6 +429,8 @@ export async function startRepl(initialModel?: string): Promise<void> {
     let thinkingBlockRendered = false;
     let hasStartedTokenStream = false;
     let thinkingStartTime = Date.now();
+    let firstTokenTime = 0;
+    let streamedTokenCount = 0;
     let toolStartTime = 0;
 
     const streamHighlighter = new StreamingMarkdownHighlighter();
@@ -298,11 +461,15 @@ export async function startRepl(initialModel?: string): Promise<void> {
             }
           },
           onToken: (tok) => {
+            if (!firstTokenTime) {
+              firstTokenTime = Date.now();
+            }
+            streamedTokenCount++;
             if (!hasStartedTokenStream) {
               spinner.stop();
               renderThinkingIfNeeded();
               hasStartedTokenStream = true;
-              process.stdout.write(`${colors.butterGold}${colors.bold}🧈 beurre${colors.reset} ${colors.dim}❯${colors.reset} `);
+              process.stdout.write(formatAgentHeader(agent.getModel(), agent.getEffort()));
             }
             accumulatedResponse += tok;
             streamHighlighter.feed(tok);
@@ -335,12 +502,18 @@ export async function startRepl(initialModel?: string): Promise<void> {
       // Finalize thinking block if it hadn't triggered yet
       renderThinkingIfNeeded();
 
-      // Estimate tokens
+      // Estimate tokens & save response for /copy
       totalTokensEstimate += Math.round((trimmed.length + accumulatedResponse.length + accumulatedReasoning.length) / 4);
+      lastAssistantResponse = accumulatedResponse;
 
       if (hasStartedTokenStream) {
         streamHighlighter.flush();
-        console.log('\n');
+        const durationSec = firstTokenTime > 0 ? (Date.now() - firstTokenTime) / 1000 : 0;
+        const tokPerSec = durationSec > 0 ? (streamedTokenCount / durationSec) : 0;
+        const speedBadge = durationSec > 0
+          ? ` ${colors.dim}[${tokPerSec.toFixed(1)} tok/s • ~${streamedTokenCount} tokens • ${durationSec.toFixed(1)}s]${colors.reset}`
+          : '';
+        console.log(`\n${speedBadge}\n`);
       } else {
         spinner.stop();
       }

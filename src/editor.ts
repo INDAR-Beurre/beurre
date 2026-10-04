@@ -1,6 +1,7 @@
 import readline from 'node:readline';
 import { colors, b, getGitStatus } from './theme.ts';
 import { SLASH_COMMANDS, getPredictiveMatches, type SlashCommandInfo } from './predictive.ts';
+import { getModelDisplayName } from './relay.ts';
 
 export interface EditorPromptOptions {
   promptText?: string;
@@ -596,7 +597,8 @@ export class BeurreEditor {
         }
 
         // Build box header with model and git status
-        const modelBadge = options.model ? ` [${options.model}]` : '';
+        const modelName = options.model ? getModelDisplayName(options.model) : '';
+        const modelBadge = modelName ? ` [${modelName}]` : '';
         const git = getGitStatus(options.cwd ?? process.cwd());
         const gitTag = git.branch ? ` (${git.branch}${git.isDirty ? '*' : ''}) ` : '';
         const headerTitle = ` 🧈 beurre${modelBadge} `;

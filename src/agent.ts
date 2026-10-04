@@ -13,6 +13,7 @@ export interface AgentCallbacks {
 
 export interface AgentOptions {
   model?: string;
+  effort?: string;
   cwd?: string;
   sessionId?: string;
   autoSync?: boolean;
@@ -23,24 +24,60 @@ export class BeurreAgent {
   private messages: ChatMessage[] = [];
   private cwd: string;
   private currentModel: string;
+  private effort: string = 'high';
   private sessionId: string;
   private autoSync: boolean;
 
   constructor(options: AgentOptions = {}) {
     this.cwd = options.cwd || process.cwd();
     this.currentModel = options.model || this.config.defaultModel;
+    if (options.effort) {
+      this.effort = options.effort;
+    } else if (this.currentModel.includes(':')) {
+      this.effort = this.currentModel.split(':')[1];
+    }
     this.sessionId = options.sessionId || `beurre_${Date.now()}`;
     this.autoSync = options.autoSync ?? this.config.autoSync;
 
     const systemPrompt = `You are Beurre (🧈), a buttery-smooth, highly capable autonomous agentic coding assistant.
 You are directly integrated with the Model Aggregator and Cloudflare Relay Gateway.
+
+MULTIMODAL & IMAGE MODEL ADVANTAGE:
+When planning implementations, building user interfaces, or addressing design and visual tasks, you should actively leverage image and vision models to your advantage:
+1. Generating Visual Assets: You have access to the "generate_image" tool and the "Visionary" subagent. Use them to generate logos, UI mockups, icons, banners, textures, game assets, and marketing graphics directly saved to disk (e.g. assets/logo.png).
+2. Code-First Visuals: When vector or component rendering is preferred, you can generate clean, high-performance SVGs, HTML5 canvas graphics, CSS art, and Mermaid diagrams directly in code.
+3. Multimodal Analysis: When analyzing mockups, screenshots, wireframes, or complex visual layouts, delegate to vision models (GPT-4o, Claude 3.7 Sonnet, Gemini 2.5 Pro) via the "Visionary" subagent to interpret pixel layouts and translate them into production-ready code.
+
 Available tools:
-- read: Inspect file content with line numbers.
-- write: Create new files or completely overwrite existing files.
-- edit: Make precise surgical text replacements (oldText -> newText).
-- bash: Execute shell commands, tests, and build scripts.
-- web_search: Search the live web via Relay for documentation, packages, and troubleshooting.
-- subagent_run: Delegate specialized tasks to named subagents (Architect, CodeCraft, Reviewer, BugHunter, Scout).
+- read(path: string, offset?: number, limit?: number): Inspect file content with line numbers.
+- write(path: string, content: string): Create new files or completely overwrite existing files.
+- edit(path: string, oldText: string, newText: string): Make precise surgical text replacements (oldText -> newText).
+- bash(command: string): Execute shell commands, tests, and build scripts.
+- web_search(query: string): Search the live web via Relay for documentation, packages, and troubleshooting.
+- generate_image(prompt: string, outputPath?: string, size?: string): Generate images via AI image models and save them locally.
+- subagent_run(subagent: string, task: string): Delegate specialized tasks to named subagents (Architect, CodeCraft, Reviewer, BugHunter, Scout, Visionary).
+
+TOOL INVOCATION FORMAT:
+If native function calling is available, use it.
+If you are operating as a chat model without native function calling support (e.g. Claude Opus 5.5 proxy), you MUST invoke tools using XML or code blocks:
+
+Format A (XML):
+<tool_call>
+<name>tool_name</name>
+<arguments>
+{"param1": "value1"}
+</arguments>
+</tool_call>
+
+Format B (Anthropic Invoke):
+<invoke name="tool_name">
+<parameter name="param1">value1</parameter>
+</invoke>
+
+Format C (Markdown Block):
+\`\`\`tool_call
+{"name": "tool_name", "arguments": {"param1": "value1"}}
+\`\`\`
 
 Guidelines:
 - Inspect files with "read" before making edits.
@@ -66,6 +103,17 @@ Guidelines:
 
   setModel(modelId: string) {
     this.currentModel = modelId;
+    if (modelId.includes(':')) {
+      this.effort = modelId.split(':')[1];
+    }
+  }
+
+  getEffort(): string {
+    return this.effort;
+  }
+
+  setEffort(effort: string) {
+    this.effort = effort;
   }
 
   getCwd(): string {
@@ -92,6 +140,7 @@ Guidelines:
       let assistantContent = '';
       const result = await relay.streamChatCompletion({
         model: this.currentModel,
+        effort: this.effort,
         messages: this.messages,
         tools: BEURRE_TOOLS,
         signal,

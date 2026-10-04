@@ -2,6 +2,7 @@
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
+import { getModelDisplayName } from './relay.ts';
 
 export const colors = {
   reset: '\x1b[0m',
@@ -26,7 +27,18 @@ export const colors = {
   cyan: '\x1b[38;2;56;189;248m',             // #38BDF8 (Info)
   mutedBox: '\x1b[38;2;87;83;78m',           // #57534E (Muted borders)
 
+  // High-Contrast Tool Colors
+  toolBash: '\x1b[38;2;249;115;22m',         // #F97316 (Vivid Orange / Terminal)
+  toolRead: '\x1b[38;2;56;189;248m',         // #38BDF8 (Sky Blue / Inspection)
+  toolEdit: '\x1b[38;2;16;185;129m',         // #10B981 (Emerald Green / Surgical Edit)
+  toolWrite: '\x1b[38;2;20;184;166m',        // #14B8A6 (Teal / Creation)
+  toolSearch: '\x1b[38;2;168;85;247m',       // #A855F7 (Purple / Web Search)
+  toolImage: '\x1b[38;2;244;63;94m',         // #F43F5E (Rose / Image Generation)
+  toolSubagent: '\x1b[38;2;245;158;11m',     // #F59E0B (Amber Gold / Subagents)
+
   // Backgrounds
+  bgUser: '\x1b[48;2;250;204;21m\x1b[30m\x1b[1m',
+  bgAgent: '\x1b[48;2;245;158;11m\x1b[30m\x1b[1m',
   bgButterGold: '\x1b[48;2;250;204;21m\x1b[30m',
   bgButterMelt: '\x1b[48;2;245;158;11m\x1b[30m',
   bgCrust: '\x1b[48;2;217;119;6m\x1b[37m',
@@ -82,6 +94,21 @@ export function formatShortCwd(cwd: string): string {
   return cwd;
 }
 
+export function getBeurreLogo(): string {
+  const g1 = colors.butterGold;
+  const g2 = colors.butterMelt;
+  const g3 = colors.butterCrust;
+  const r = colors.reset;
+  return [
+    `  ${g1}██████╗ ███████╗██╗   ██╗██████╗ ██████╗ ███████╗${r}`,
+    `  ${g1}██╔══██╗██╔════╝██║   ██║██╔══██╗██╔══██╗██╔════╝${r}`,
+    `  ${g2}██████╔╝█████╗  ██║   ██║██████╔╝██████╔╝█████╗  ${r}`,
+    `  ${g2}██╔══██╗██╔══╝  ██║   ██║██╔══██╗██╔══██╗██╔══╝  ${r}`,
+    `  ${g3}██████╔╝███████╗╚██████╔╝██║  ██║██║  ██║███████╗${r}`,
+    `  ${g3}╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝${r}`,
+  ].join('\n');
+}
+
 export function claudePromptHeader(model: string, cwd: string): string {
   const shortPath = formatShortCwd(cwd);
   const branch = getGitBranch(cwd);
@@ -89,7 +116,10 @@ export function claudePromptHeader(model: string, cwd: string): string {
   const cols = Math.min(process.stdout.columns || 80, 80);
   const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
-  const title = ` beurre [${model}] `;
+  const modelDisplayName = getModelDisplayName(model);
+  const title = modelDisplayName !== model
+    ? ` beurre [${modelDisplayName}] `
+    : ` beurre [${model}] `;
   const borderLen = Math.max(0, cols - title.length - 3);
 
   const line1 = `${colors.butterCrust}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterCrust}${'─'.repeat(borderLen)}╮${colors.reset}`;
@@ -101,53 +131,30 @@ export function claudePromptHeader(model: string, cwd: string): string {
   return `\n${line1}\n${line2}\n${line3}\n`;
 }
 
-export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process.cwd()): string {
+export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process.cwd(), effort = 'high'): string {
   const shortPath = formatShortCwd(cwd);
   const git = getGitStatus(cwd);
   const gitInfo = git.branch ? ` (git: ${git.branch}${git.isDirty ? '*' : ''})` : '';
-  const cols = Math.min(process.stdout.columns || 80, 80);
-  const innerWidth = cols - 4;
+  const modelDisplayName = getModelDisplayName(model);
+  const modelStr = modelDisplayName !== model
+    ? `${modelDisplayName} (${model})`
+    : model;
 
-  const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
-  const padLine = (content: string, visibleLen: number) => {
-    const pad = Math.max(0, innerWidth - visibleLen);
-    return `${colors.butterCrust}│${colors.reset}  ${content}${' '.repeat(pad)}${colors.butterCrust}│${colors.reset}`;
-  };
-
-  const lineHero = `${colors.bold}${colors.butterGold}🧈 BEURRE${colors.reset} ${colors.dim}v${version}${colors.reset}  ${colors.dim}•${colors.reset}  ${colors.butterCream}L'Agent Fondant & Autonome (Claude / OMP Style)${colors.reset}`;
-  const lineHeroLen = stripAnsi(lineHero).length;
-
-  const lineModel = `${b.bold('Model:')}      ${b.gold(model)} ${colors.dim}(Relay Gateway • 🧠 reasoning)${colors.reset}`;
-  const lineModelLen = stripAnsi(lineModel).length;
-
-  const lineDir = `${b.bold('Directory:')}  ${b.cream(shortPath)}${colors.dim}${gitInfo}${colors.reset}`;
-  const lineDirLen = stripAnsi(lineDir).length;
-
-  const lineRelay = `${b.bold('Relay:')}      ${b.cyan('https://relay-gw.pages.dev')} ${colors.green}● LIVE${colors.reset}`;
-  const lineRelayLen = stripAnsi(lineRelay).length;
-
-  const lineSubs = `${b.bold('Subagents:')}  ${b.pale('Architect • CodeCraft • Reviewer • BugHunter • Scout')}${colors.dim} (ready)${colors.reset}`;
-  const lineSubsLen = stripAnsi(lineSubs).length;
-
-  const lineCmds = `${b.bold('Control:')}    ${b.gold('/menu')} dashboard • ${b.gold('/model')} switch • ${b.gold('/loop')} loop • ${b.gold('/help')} help`;
-  const lineCmdsLen = stripAnsi(lineCmds).length;
-
-  const topBorder = `${colors.butterCrust}╭${'─'.repeat(cols - 2)}╮${colors.reset}`;
-  const midDivider = `${colors.butterCrust}├${'─'.repeat(cols - 2)}┤${colors.reset}`;
-  const bottomBorder = `${colors.butterCrust}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
+  const logo = getBeurreLogo();
 
   return [
     '',
-    topBorder,
-    padLine(lineHero, lineHeroLen),
-    midDivider,
-    padLine(lineModel, lineModelLen),
-    padLine(lineDir, lineDirLen),
-    padLine(lineRelay, lineRelayLen),
-    padLine(lineSubs, lineSubsLen),
-    midDivider,
-    padLine(lineCmds, lineCmdsLen),
-    bottomBorder,
+    logo,
+    '',
+    `  ${colors.bold}${colors.butterCream}Welcome to Beurre!${colors.reset} ${colors.dim}(v${version})${colors.reset}`,
+    `  ${colors.butterPale}L'Agent Fondant & Autonome${colors.reset}`,
+    '',
+    `  ${colors.dim}Type ${colors.butterGold}/help${colors.dim} for help, ${colors.butterGold}/menu${colors.dim} for dashboard, ${colors.butterGold}/exit${colors.dim} to exit${colors.reset}`,
+    '',
+    `  ${colors.butterGold}●${colors.reset} ${b.bold('Model:')}      ${b.gold(modelStr)} ${colors.dim}· effort: ${effort}${colors.reset}`,
+    `  ${colors.butterMelt}●${colors.reset} ${b.bold('Directory:')}  ${b.cream(shortPath)}${colors.dim}${gitInfo}${colors.reset}`,
+    `  ${colors.cyan}●${colors.reset} ${b.bold('Relay:')}      ${b.cyan('https://relay-gw.pages.dev')} ${colors.green}● live${colors.reset}`,
+    `  ${colors.butterCrust}●${colors.reset} ${b.bold('Subagents:')}  ${b.pale('Architect • CodeCraft • Reviewer • BugHunter • Scout • Visionary')}${colors.dim} (ready)${colors.reset}`,
     '',
   ].join('\n');
 }
@@ -162,12 +169,15 @@ export interface StatusBarOptions {
 }
 
 export function statusBar(options: StatusBarOptions): string {
-  const cols = Math.min(process.stdout.columns || 80, 80);
+  const terminalCols = process.stdout.columns || 100;
+  const cols = Math.max(80, Math.min(terminalCols, 120));
   const shortPath = formatShortCwd(options.cwd);
   const git = getGitStatus(options.cwd);
   const gitTag = git.branch ? ` (${git.branch}${git.isDirty ? '*' : ''})` : '';
+  const modelDisplayName = getModelDisplayName(options.model);
+  const displayModel = modelDisplayName !== options.model ? `${modelDisplayName} (${options.model})` : options.model;
 
-  const left = ` 🧈 ${colors.bold}${colors.butterGold}${options.model}${colors.reset} ${colors.dim}│${colors.reset} ${colors.butterCream}${shortPath}${colors.dim}${gitTag}${colors.reset}`;
+  const left = ` 🧈 ${colors.bold}${colors.butterGold}${displayModel}${colors.reset} ${colors.dim}│${colors.reset} ${colors.butterCream}${shortPath}${colors.dim}${gitTag}${colors.reset}`;
 
   const turnsText = options.turns !== undefined ? `Turns: ${options.turns} ` : '';
   const tokensText = options.tokens !== undefined ? `~${Math.round(options.tokens / 1000)}k tok ` : '';
@@ -183,8 +193,9 @@ export function statusBar(options: StatusBarOptions): string {
   const rightLen = stripAnsi(right).length;
 
   if (cols < leftLen + rightLen + 4) {
-    // Compact single-line bar for narrow terminals
-    return `${colors.butterGold}🧈 [${options.model}]${colors.reset} ${colors.butterCream}${shortPath}${colors.dim}${gitTag}${colors.reset} ${statusIndicator}`;
+    const compactStats = [turnsText.trim(), tokensText.trim()].filter(Boolean).join(' • ');
+    const statsTag = compactStats ? ` ${colors.dim}[${compactStats}]${colors.reset}` : '';
+    return `${colors.butterGold}🧈 [${displayModel}]${colors.reset} ${colors.butterCream}${shortPath}${colors.dim}${gitTag}${colors.reset}${statsTag} ${statusIndicator}`;
   }
 
   const spaces = Math.max(1, cols - leftLen - rightLen - 2);
@@ -213,26 +224,49 @@ export function renderToast(message: string, isSuccess = true): string {
   return `${colors.bgGray} ${icon} ${colors.bold}${message} ${colors.reset}`;
 }
 
+export function formatUserMessageCard(prompt: string): string {
+  const badge = `${colors.bgUser} 👤 YOU ${colors.reset}`;
+  const lines = prompt.split('\n');
+  if (lines.length === 1) {
+    return `\n${badge} ${colors.bold}${colors.white}${prompt}${colors.reset}\n`;
+  }
+  const formatted = lines
+    .map((l) => `  ${colors.butterGold}│${colors.reset} ${colors.bold}${colors.white}${l}${colors.reset}`)
+    .join('\n');
+  return `\n${badge}\n${formatted}\n`;
+}
+
+export function formatAgentHeader(model: string, effort?: string): string {
+  const modelDisplayName = getModelDisplayName(model);
+  const effortBadge = effort
+    ? ` ${colors.dim}· ${colors.butterPale}effort: ${effort}${colors.reset}`
+    : '';
+  return `\n${colors.bgAgent} 🧈 BEURRE [${modelDisplayName}] ${colors.reset}${effortBadge}\n`;
+}
+
 export function formatClaudeToolCall(name: string, args: Record<string, any>, durationMs?: number): string {
   let detail = '';
   switch (name) {
     case 'bash':
-      detail = b.bold(args.command || '');
+      detail = `${colors.bold}${colors.white}${args.command || ''}${colors.reset}`;
       break;
     case 'read':
-      detail = `${b.cream(args.path || '')}${args.offset ? `:${args.offset}` : ''}`;
+      detail = `${colors.cyan}${args.path || ''}${args.offset ? `:${args.offset}` : ''}${colors.reset}`;
       break;
     case 'write':
-      detail = b.cream(args.path || '');
+      detail = `${colors.cyan}${args.path || ''}${colors.reset}`;
       break;
     case 'edit':
-      detail = b.cream(args.path || '');
+      detail = `${colors.green}${args.path || ''}${colors.reset}`;
       break;
     case 'web_search':
-      detail = b.cream(`"${args.query || ''}"`);
+      detail = `${colors.italic}${colors.butterCream}"${args.query || ''}"${colors.reset}`;
       break;
     case 'subagent_run':
-      detail = `${b.subagentBadge(args.subagent || '')} → ${b.dim(args.task?.slice(0, 50) || '')}`;
+      detail = `${b.subagentBadge(args.subagent || '')} ${colors.dim}→${colors.reset} ${colors.butterPale}${args.task?.slice(0, 50) || ''}${colors.reset}`;
+      break;
+    case 'generate_image':
+      detail = `${colors.italic}${colors.butterPale}"${args.prompt?.slice(0, 50) || ''}"${colors.reset}`;
       break;
     default:
       detail = JSON.stringify(args).slice(0, 60);
@@ -245,32 +279,36 @@ export function formatClaudeToolCall(name: string, args: Record<string, any>, du
 
   switch (name) {
     case 'bash':
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Bash')}(${detail})${timing}`;
+      return `${colors.toolBash}⚡${colors.reset} ${colors.bold}${colors.toolBash}Bash${colors.reset}(${detail})${timing}`;
     case 'read':
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Read')}(${detail})${timing}`;
+      return `${colors.toolRead}📖${colors.reset} ${colors.bold}${colors.toolRead}Read${colors.reset}(${detail})${timing}`;
     case 'write':
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Write')}(${detail})${timing}`;
+      return `${colors.toolWrite}📝${colors.reset} ${colors.bold}${colors.toolWrite}Write${colors.reset}(${detail})${timing}`;
     case 'edit':
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Edit')}(${detail})${timing}`;
+      return `${colors.toolEdit}✏️${colors.reset} ${colors.bold}${colors.toolEdit}Edit${colors.reset}(${detail})${timing}`;
     case 'web_search':
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Search')}(${detail})${timing}`;
+      return `${colors.toolSearch}🔍${colors.reset} ${colors.bold}${colors.toolSearch}Search${colors.reset}(${detail})${timing}`;
     case 'subagent_run':
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Subagent')}(${detail})${timing}`;
+      return `${colors.toolSubagent}👥${colors.reset} ${colors.bold}${colors.toolSubagent}Subagent${colors.reset}(${detail})${timing}`;
+    case 'generate_image':
+      return `${colors.toolImage}🎨${colors.reset} ${colors.bold}${colors.toolImage}ImageGen${colors.reset}(${detail})${timing}`;
     default:
       return `${colors.butterMelt}●${colors.reset} ${b.bold(name)}(${b.dim(detail)})${timing}`;
   }
 }
 
 export function formatClaudeToolResult(output: string, isError = false, durationMs?: number): string {
-  const icon = isError ? colors.red + '❌ ' : colors.green + '└─ ';
+  const icon = isError ? `${colors.red}❌ Error: ${colors.reset}` : `${colors.green}└─ ✔ ${colors.reset}`;
   const firstLine = output.trim().split('\n')[0] || '(empty)';
-  const preview = firstLine.slice(0, 100);
+  const preview = isError
+    ? `${colors.red}${firstLine.slice(0, 100)}${colors.reset}`
+    : `${colors.gray}${firstLine.slice(0, 100)}${colors.reset}`;
   const remaining = output.trim().split('\n').length - 1;
-  const more = remaining > 0 ? ` ${colors.dim}(+${remaining} more lines)` : '';
+  const more = remaining > 0 ? ` ${colors.dim}(+${remaining} more lines)${colors.reset}` : '';
   const timing = durationMs !== undefined
     ? ` ${colors.dim}[${durationMs >= 1000 ? (durationMs / 1000).toFixed(1) + 's' : durationMs + 'ms'}]${colors.reset}`
     : '';
-  return `  ${icon}${colors.dim}${preview}${colors.reset}${more}${timing}`;
+  return `  ${icon}${preview}${more}${timing}`;
 }
 
 export function butterBox(title: string, content: string, borderColor = colors.butterMelt): string {

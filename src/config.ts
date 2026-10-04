@@ -60,6 +60,12 @@ const DEFAULT_CONFIG: BeurreConfig = {
       modelId: 'glm-5-3-flash',
       description: 'Explores codebase, searches live web documentation via relay, and provides citations.',
     },
+    Visionary: {
+      name: 'Visionary',
+      role: 'Multimodal UI/UX & Image Model Specialist',
+      modelId: 'gpt-4o',
+      description: 'Leverages image & vision models to inspect visual designs, create SVG assets, formulate image generation prompts, and evaluate UI aesthetics.',
+    },
   },
   loopDelayMs: 1000,
   autoSync: true,

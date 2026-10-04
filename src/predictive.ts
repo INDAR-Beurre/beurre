@@ -78,6 +78,38 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Core',
   },
   {
+    command: '/effort',
+    argsHint: '[max|high|medium|low]',
+    description: 'Configure reasoning effort level',
+    category: 'Models',
+  },
+  {
+    command: '/copy',
+    description: 'Copy last assistant response to system clipboard',
+    category: 'Core',
+  },
+  {
+    command: '/diff',
+    description: 'View git working tree diff with syntax highlighting',
+    category: 'Tools',
+  },
+  {
+    command: '/export',
+    argsHint: '[path]',
+    description: 'Export conversation session to Markdown file',
+    category: 'Session',
+  },
+  {
+    command: '/usage',
+    description: 'Show token usage breakdown and context metrics',
+    category: 'Session',
+  },
+  {
+    command: '/undo',
+    description: 'Revert the last user and assistant interaction turn',
+    category: 'Session',
+  },
+  {
     command: '/exit',
     description: 'Save butter state and exit CLI',
     category: 'Core',

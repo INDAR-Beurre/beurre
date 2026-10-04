@@ -115,11 +115,27 @@ export const BEURRE_TOOLS: ToolDefinition[] = [
         properties: {
           subagent: {
             type: 'string',
-            description: 'Name of the subagent to invoke (e.g. Architect, CodeCraft, Reviewer, BugHunter, Scout)',
+            description: 'Name of the subagent to invoke (e.g. Architect, CodeCraft, Reviewer, BugHunter, Scout, Visionary)',
           },
           task: { type: 'string', description: 'Detailed prompt/instruction for the subagent' },
         },
         required: ['subagent', 'task'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_image',
+      description: 'Generate an image using AI image models via the Relay Gateway, save to a file path, and return the local path for use in apps or UI.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'Detailed prompt describing the image to generate' },
+          outputPath: { type: 'string', description: 'Optional relative or absolute file path to save image (defaults to assets/image_<timestamp>.png)' },
+          size: { type: 'string', description: 'Image resolution (e.g. "1024x1024", "512x512")' },
+        },
+        required: ['prompt'],
       },
     },
   },
@@ -276,6 +292,50 @@ export async function executeTool(
           name,
           output: `[Subagent ${subagentName} Result]:\n${subResult.summary}`,
         };
+      }
+
+      case 'generate_image': {
+        const prompt = args.prompt;
+        const relPath = args.outputPath || `assets/image_${Date.now()}.png`;
+        const absPath = path.resolve(ctx.cwd, relPath);
+        const parentDir = path.dirname(absPath);
+        if (!fs.existsSync(parentDir)) {
+          fs.mkdirSync(parentDir, { recursive: true });
+        }
+
+        const res = await relay.generateImage(prompt, { size: args.size });
+        if (res.b64) {
+          fs.writeFileSync(absPath, Buffer.from(res.b64, 'base64'));
+          return {
+            tool_call_id: toolCallId,
+            name,
+            output: `Successfully generated image and saved to: ${relPath}\nPrompt: "${prompt}"`,
+          };
+        } else if (res.url) {
+          try {
+            const imgRes = await fetch(res.url);
+            const arrayBuffer = await imgRes.arrayBuffer();
+            fs.writeFileSync(absPath, Buffer.from(arrayBuffer));
+            return {
+              tool_call_id: toolCallId,
+              name,
+              output: `Successfully generated image and saved to: ${relPath}\nPrompt: "${prompt}"`,
+            };
+          } catch {
+            return {
+              tool_call_id: toolCallId,
+              name,
+              output: `Generated image URL: ${res.url}\n(Failed to download locally to ${relPath})`,
+            };
+          }
+        } else {
+          return {
+            tool_call_id: toolCallId,
+            name,
+            output: `Image generation note: ${res.error || 'Failed to generate image'}`,
+            isError: true,
+          };
+        }
       }
 
       default:

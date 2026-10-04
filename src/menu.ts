@@ -1,6 +1,6 @@
 import readline from 'node:readline';
 import { BeurreAgent } from './agent.ts';
-import { relay } from './relay.ts';
+import { relay, getModelDisplayName } from './relay.ts';
 import { listSubagents, runNamedSubagent } from './subagents.ts';
 import { compactMessages } from './compact.ts';
 import { BeurreLoopRunner } from './loop.ts';
@@ -109,7 +109,8 @@ export async function showMenu(
     const borderLen = Math.max(0, cols - title.length - 3);
 
     console.log(`${colors.butterGold}╭──${colors.bold}${title}${colors.reset}${colors.butterGold}${'─'.repeat(borderLen)}╮${colors.reset}`);
-    const infoText = `  ${b.bold('Model:')} ${b.badge(agent.getModel())}  ${colors.dim}•${colors.reset}  ${b.bold('Thinking:')} ${b.gold(currentThinkingMode)}  ${colors.dim}•${colors.reset}  ${b.bold('Cwd:')} ${b.cream(agent.getCwd())}`;
+    const modelDisplayName = getModelDisplayName(agent.getModel());
+    const infoText = `  ${b.bold('Model:')} ${b.badge(modelDisplayName)}  ${colors.dim}•${colors.reset}  ${b.bold('Effort:')} ${b.gold(agent.getEffort().toUpperCase())}  ${colors.dim}•${colors.reset}  ${b.bold('Thinking:')} ${b.gold(currentThinkingMode)}`;
     const infoLen = stripAnsi(infoText).length;
     const padHeader = Math.max(0, cols - infoLen - 2);
     console.log(`${colors.butterGold}│${colors.reset}${infoText}${' '.repeat(padHeader)}${colors.butterGold}│${colors.reset}`);
