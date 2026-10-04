@@ -141,20 +141,40 @@ export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process
     : model;
 
   const logo = getBeurreLogo();
+  const cols = Math.min(process.stdout.columns || 80, 80);
+  const innerWidth = cols - 4;
+  const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
+
+  const formatLine = (content: string) => {
+    const visibleLen = stripAnsi(content).length;
+    const pad = Math.max(0, innerWidth - visibleLen);
+    return `${colors.mutedBox}│${colors.reset} ${content}${' '.repeat(pad)} ${colors.mutedBox}│${colors.reset}`;
+  };
+
+  const topBorder = `${colors.mutedBox}╭${'─'.repeat(cols - 2)}╮${colors.reset}`;
+  const bottomBorder = `${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
+
+  const header = ` ${colors.bold}${colors.butterGold}🧈 BEURRE${colors.reset} ${colors.dim}v${version}${colors.reset} ${colors.dim}•${colors.reset} ${colors.butterCream}L'Agent Fondant & Autonome${colors.reset}`;
+  const modelLine = ` ${colors.dim}Model:${colors.reset}     ${colors.bold}${colors.butterGold}${modelStr}${colors.reset} ${colors.dim}· effort: ${effort}${colors.reset}`;
+  const dirLine = ` ${colors.dim}Workspace:${colors.reset} ${colors.white}${shortPath}${colors.reset}${colors.dim}${gitInfo}${colors.reset}`;
+  const relayLine = ` ${colors.dim}Relay:${colors.reset}     ${colors.cyan}https://relay-gw.pages.dev${colors.reset} ${colors.green}● LIVE${colors.reset}`;
+  const subLine = ` ${colors.dim}Subagents:${colors.reset} ${colors.butterPale}Architect • CodeCraft • Reviewer • BugHunter • Scout • Visionary${colors.reset}`;
+  const hintsLine = ` ${colors.dim}Commands:${colors.reset}  Type ${colors.butterGold}/menu${colors.reset} ${colors.dim}for settings,${colors.reset} ${colors.butterGold}/models${colors.reset} ${colors.dim}to switch,${colors.reset} ${colors.butterGold}/help${colors.reset} ${colors.dim}for cheatsheet${colors.reset}`;
 
   return [
     '',
     logo,
     '',
-    `  ${colors.bold}${colors.butterCream}Welcome to Beurre!${colors.reset} ${colors.dim}(v${version})${colors.reset}`,
-    `  ${colors.butterPale}L'Agent Fondant & Autonome${colors.reset}`,
-    '',
-    `  ${colors.dim}Type ${colors.butterGold}/help${colors.dim} for help, ${colors.butterGold}/menu${colors.dim} for dashboard, ${colors.butterGold}/exit${colors.dim} to exit${colors.reset}`,
-    '',
-    `  ${colors.butterGold}●${colors.reset} ${b.bold('Model:')}      ${b.gold(modelStr)} ${colors.dim}· effort: ${effort}${colors.reset}`,
-    `  ${colors.butterMelt}●${colors.reset} ${b.bold('Directory:')}  ${b.cream(shortPath)}${colors.dim}${gitInfo}${colors.reset}`,
-    `  ${colors.cyan}●${colors.reset} ${b.bold('Relay:')}      ${b.cyan('https://relay-gw.pages.dev')} ${colors.green}● live${colors.reset}`,
-    `  ${colors.butterCrust}●${colors.reset} ${b.bold('Subagents:')}  ${b.pale('Architect • CodeCraft • Reviewer • BugHunter • Scout • Visionary')}${colors.dim} (ready)${colors.reset}`,
+    topBorder,
+    formatLine(header),
+    formatLine(''),
+    formatLine(modelLine),
+    formatLine(dirLine),
+    formatLine(relayLine),
+    formatLine(subLine),
+    formatLine(''),
+    formatLine(hintsLine),
+    bottomBorder,
     '',
   ].join('\n');
 }
@@ -200,9 +220,9 @@ export function statusBar(options: StatusBarOptions): string {
 
   const spaces = Math.max(1, cols - leftLen - rightLen - 2);
 
-  const topBorder = `${colors.butterMelt}╭${'─'.repeat(cols - 2)}╮${colors.reset}`;
-  const content = `${colors.butterMelt}│${colors.reset}${left}${' '.repeat(spaces)}${right}${colors.butterMelt}│${colors.reset}`;
-  const bottomBorder = `${colors.butterMelt}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
+  const topBorder = `${colors.mutedBox}╭${'─'.repeat(cols - 2)}╮${colors.reset}`;
+  const content = `${colors.mutedBox}│${colors.reset}${left}${' '.repeat(spaces)}${right}${colors.mutedBox}│${colors.reset}`;
+  const bottomBorder = `${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
 
   return `${topBorder}\n${content}\n${bottomBorder}`;
 }
@@ -225,23 +245,26 @@ export function renderToast(message: string, isSuccess = true): string {
 }
 
 export function formatUserMessageCard(prompt: string): string {
-  const badge = `${colors.bgUser} 👤 YOU ${colors.reset}`;
+  const badge = `${colors.dim}👤 YOU${colors.reset}`;
+  const chevron = `${colors.butterGold}${colors.bold}❯${colors.reset}`;
   const lines = prompt.split('\n');
   if (lines.length === 1) {
-    return `\n${badge} ${colors.bold}${colors.white}${prompt}${colors.reset}\n`;
+    return `\n${chevron} ${colors.bold}${colors.white}${prompt}${colors.reset}  ${badge}\n`;
   }
   const formatted = lines
-    .map((l) => `  ${colors.butterGold}│${colors.reset} ${colors.bold}${colors.white}${l}${colors.reset}`)
+    .map((l, i) => (i === 0
+      ? `${chevron} ${colors.bold}${colors.white}${l}${colors.reset}`
+      : `  ${colors.dim}│${colors.reset} ${colors.bold}${colors.white}${l}${colors.reset}`))
     .join('\n');
-  return `\n${badge}\n${formatted}\n`;
+  return `\n${formatted}  ${badge}\n`;
 }
 
 export function formatAgentHeader(model: string, effort?: string): string {
   const modelDisplayName = getModelDisplayName(model);
   const effortBadge = effort
-    ? ` ${colors.dim}· ${colors.butterPale}effort: ${effort}${colors.reset}`
+    ? ` ${colors.dim}· effort: ${colors.butterPale}${effort}${colors.reset}`
     : '';
-  return `\n${colors.bgAgent} 🧈 BEURRE [${modelDisplayName}] ${colors.reset}${effortBadge}\n`;
+  return `\n${colors.butterGold}${colors.bold}🧈 BEURRE${colors.reset} ${colors.dim}[${colors.butterCream}${modelDisplayName}${colors.dim}]${colors.reset}${effortBadge}\n\n`;
 }
 
 export function formatClaudeToolCall(name: string, args: Record<string, any>, durationMs?: number): string {

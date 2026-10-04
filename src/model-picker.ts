@@ -58,20 +58,27 @@ export async function openModelPicker(
   const stdin = process.stdin;
   const stdout = process.stdout;
 
+  // Enter alternate screen buffer & hide cursor
+  stdout.write('\x1b[?1049h\x1b[?25l');
+
+  const cleanupAndExit = () => {
+    stdout.write('\x1b[?25h\x1b[?1049l');
+  };
+
   const render = () => {
-    console.clear();
+    stdout.write('\x1b[H\x1b[2J');
     const cols = Math.min(stdout.columns || 80, 80);
     const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
     const title = ` 🧈 BEURRE MODEL NAVIGATOR `;
     const borderLen = Math.max(0, cols - title.length - 3);
 
-    console.log(`${colors.butterGold}╭──${colors.bold}${title}${colors.reset}${colors.butterGold}${'─'.repeat(borderLen)}╮${colors.reset}`);
-    const infoText = `  ${b.bold('Active:')} ${b.badge(currentModelId)}  ${colors.dim}•${colors.reset}  ${b.bold('Upstreams:')} ${b.green(`● ${liveProvidersCount} live`)} / ${providers.length} total`;
+    console.log(`${colors.mutedBox}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.mutedBox}${'─'.repeat(borderLen)}╮${colors.reset}`);
+    const infoText = `  ${b.bold('Active:')} ${b.badge(getModelDisplayName(currentModelId))}  ${colors.dim}•${colors.reset}  ${b.bold('Upstreams:')} ${b.green(`● ${liveProvidersCount} live`)} / ${providers.length} total`;
     const infoLen = stripAnsi(infoText).length;
     const padHeader = Math.max(0, cols - infoLen - 2);
-    console.log(`${colors.butterGold}│${colors.reset}${infoText}${' '.repeat(padHeader)}${colors.butterGold}│${colors.reset}`);
-    console.log(`${colors.butterGold}╰${'─'.repeat(cols - 2)}╯${colors.reset}\n`);
+    console.log(`${colors.mutedBox}│${colors.reset}${infoText}${' '.repeat(padHeader)}${colors.mutedBox}│${colors.reset}`);
+    console.log(`${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}\n`);
 
     const filtered = filterModelList(models, filterQuery);
 
@@ -180,8 +187,7 @@ export async function openModelPicker(
         }
         stdin.removeListener('data', onData);
         stdin.setRawMode(false);
-        console.clear();
-        console.log(`\n${b.dim('Model selection cancelled.')}\n`);
+        cleanupAndExit();
         resolve(currentModelId);
         return;
       }
@@ -190,8 +196,7 @@ export async function openModelPicker(
       if (str === '\x03') {
         stdin.removeListener('data', onData);
         stdin.setRawMode(false);
-        console.clear();
-        console.log(`\n${b.dim('Model selection cancelled.')}\n`);
+        cleanupAndExit();
         resolve(currentModelId);
         return;
       }
@@ -203,9 +208,8 @@ export async function openModelPicker(
           const chosen = filtered[selectedIdx].id;
           stdin.removeListener('data', onData);
           stdin.setRawMode(false);
-          console.clear();
+          cleanupAndExit();
           onSelect(chosen);
-          console.log(`\n${renderToast(`Model switched to: ${chosen}`, true)}\n`);
           resolve(chosen);
           return;
         }

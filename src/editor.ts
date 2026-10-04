@@ -539,7 +539,7 @@ export class BeurreEditor {
           }
           stdout.write('\r');
           for (let i = 0; i < lastRenderedLinesCount; i++) {
-            stdout.write('\x1b[2K\r');
+            stdout.write('\x1b[2K');
             if (i < lastRenderedLinesCount - 1) {
               stdout.write('\x1b[1B');
             }
@@ -560,9 +560,10 @@ export class BeurreEditor {
 
         const lines = state.buffer.split('\n');
         const coords = getBuffer2DCoords(state.buffer, state.cursor);
+        const isMultiLine = lines.length > 1;
 
-        // Helper to format a box content line bounded strictly to cols
-        const formatBoxLine = (content: string, borderColor = colors.butterCrust): string => {
+        // Format a bordered line bounded strictly to terminal cols
+        const formatBoxLine = (content: string, borderColor = colors.mutedBox): string => {
           const maxInner = Math.max(10, cols - 4);
           const visualLen = stripAnsi(content).length;
           let text = content;
@@ -587,7 +588,7 @@ export class BeurreEditor {
           return `${borderColor}│${colors.reset} ${text}${' '.repeat(pad)} ${borderColor}│${colors.reset}`;
         };
 
-        // Calculate ghost completion text on line 0 if command matching
+        // Calculate ghost completion text on line 0 if slash command matching
         let ghostText = '';
         if (state.buffer.startsWith('/') && state.autocompleteMatches.length > 0 && coords.lineIdx === 0) {
           const topMatch = state.autocompleteMatches[state.selectedAutocompleteIdx]?.command ?? '';
@@ -596,107 +597,86 @@ export class BeurreEditor {
           }
         }
 
-        // Build box header with model and git status
-        const modelName = options.model ? getModelDisplayName(options.model) : '';
-        const modelBadge = modelName ? ` [${modelName}]` : '';
-        const git = getGitStatus(options.cwd ?? process.cwd());
-        const gitTag = git.branch ? ` (${git.branch}${git.isDirty ? '*' : ''}) ` : '';
-        const headerTitle = ` 🧈 beurre${modelBadge} `;
-
-        const leftLen = stripAnsi(headerTitle).length;
-        const rightLen = stripAnsi(gitTag).length;
-        const middleFill = Math.max(0, cols - leftLen - rightLen - 5);
-
         const drawnLines: string[] = [];
-        drawnLines.push(
-          `${colors.butterCrust}╭──${colors.bold}${colors.butterGold}${headerTitle}${colors.reset}${colors.butterCrust}${'─'.repeat(middleFill)}${gitTag ? `${colors.cyan}${gitTag}${colors.reset}${colors.butterCrust}─` : '─'}╮${colors.reset}`
-        );
+        let targetRow = 0;
+        let targetCol = 1;
 
-        // Render buffer lines or placeholder
-        const isBufferEmpty = state.buffer === '';
-        const isMultiLine = lines.length > 1;
-        const maxLineNumDigits = lines.length.toString().length;
+        if (isMultiLine) {
+          // Dedicated clean multi-line editor card
+          const maxLineNumDigits = lines.length.toString().length;
+          const headerTitle = ` Multi-line Prompt (Shift+Enter newline • Enter send) `;
+          const topFill = Math.max(0, cols - headerTitle.length - 3);
+          drawnLines.push(
+            `${colors.mutedBox}╭──${colors.dim}${headerTitle}${colors.reset}${colors.mutedBox}${'─'.repeat(topFill)}╮${colors.reset}`
+          );
 
-        if (isBufferEmpty) {
-          const placeholder = `${colors.butterGold}>${colors.reset} ${colors.darkGray}Type a prompt or / for commands (Shift+Enter for newline)${colors.reset}`;
-          drawnLines.push(formatBoxLine(placeholder, colors.butterCrust));
-        } else {
           lines.forEach((l, idx) => {
-            let prefix = '';
-            if (isMultiLine) {
-              const numStr = (idx + 1).toString().padStart(maxLineNumDigits, ' ');
-              const arrow = idx === 0 ? `${colors.butterGold}>${colors.reset}` : ' ';
-              prefix = `${colors.darkGray}${numStr} │${colors.reset} ${arrow} `;
-            } else {
-              prefix = `${colors.butterGold}>${colors.reset} `;
-            }
-
+            const numStr = (idx + 1).toString().padStart(maxLineNumDigits, ' ');
+            const arrow = idx === coords.lineIdx ? `${colors.butterGold}❯${colors.reset}` : ' ';
             const ghost = idx === 0 ? `${colors.dim}${ghostText}${colors.reset}` : '';
-            const lineContent = `${prefix}${l}${ghost}`;
-            drawnLines.push(formatBoxLine(lineContent, colors.butterCrust));
-          });
-        }
-
-        // Autocomplete popup if matches exist
-        if (state.autocompleteMatches.length > 0) {
-          const maxDisplay = 5;
-          const visibleMatches = state.autocompleteMatches.slice(0, maxDisplay);
-          const popupHeader = `├── Commands (↑/↓ select, Tab complete, Esc dismiss) `;
-          const fillLen = Math.max(0, cols - popupHeader.length - 1);
-          drawnLines.push(`${colors.butterMelt}${popupHeader}${'─'.repeat(fillLen)}┤${colors.reset}`);
-
-          visibleMatches.forEach((m, idx) => {
-            const isSelected = idx === state.selectedAutocompleteIdx;
-            const pointer = isSelected ? `${colors.butterGold}🧈 >${colors.reset}` : '    ';
-            const hint = m.argsHint ? ` ${colors.dim}${m.argsHint}${colors.reset}` : '';
-            const cmdText = isSelected
-              ? `${colors.bgButterGold}${colors.bold} ${m.command} ${colors.reset}${hint}`
-              : `${colors.bold}${colors.butterCream}${m.command}${colors.reset}${hint}`;
-
-            const descText = `${colors.gray}• ${m.description}${colors.reset}`;
-
-            const visibleCmdLen = stripAnsi(cmdText).length;
-            const padCmd = Math.max(1, 22 - visibleCmdLen);
-            const lineContent = `  ${pointer} ${cmdText}${' '.repeat(padCmd)} ${descText}`;
-            drawnLines.push(formatBoxLine(lineContent, colors.butterMelt));
+            const lineContent = `${colors.darkGray}${numStr} │${colors.reset} ${arrow} ${l}${ghost}`;
+            drawnLines.push(formatBoxLine(lineContent, colors.mutedBox));
           });
 
-          if (state.autocompleteMatches.length > maxDisplay) {
-            const remaining = state.autocompleteMatches.length - maxDisplay;
-            const moreLine = `  ${colors.dim}... and ${remaining} more commands${colors.reset}`;
-            drawnLines.push(formatBoxLine(moreLine, colors.butterMelt));
+          drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}`);
+          targetRow = 1 + coords.lineIdx;
+          targetCol = 2 + maxLineNumDigits + 3 + 2 + coords.colIdx;
+        } else {
+          // Minimalist Claude Code prompt line: ❯ prompt
+          const promptPrefix = `${colors.butterGold}${colors.bold}❯${colors.reset} `;
+          const isBufferEmpty = state.buffer === '';
+
+          if (isBufferEmpty) {
+            const placeholder = `${colors.darkGray}Type a prompt or / for commands (Shift+Enter for newline)${colors.reset}`;
+            drawnLines.push(`${promptPrefix}${placeholder}`);
+          } else {
+            const ghost = `${colors.dim}${ghostText}${colors.reset}`;
+            drawnLines.push(`${promptPrefix}${colors.bold}${colors.white}${state.buffer}${colors.reset}${ghost}`);
+          }
+
+          targetRow = 0;
+          targetCol = 3 + coords.colIdx;
+
+          // If slash command autocompletions exist, draw floating dropdown below prompt
+          if (state.autocompleteMatches.length > 0) {
+            const maxDisplay = 5;
+            const visibleMatches = state.autocompleteMatches.slice(0, maxDisplay);
+            const popupHeader = `╭─ Commands (Tab complete, ↑/↓ select, Esc dismiss) `;
+            const fillLen = Math.max(0, cols - popupHeader.length - 1);
+            drawnLines.push(`${colors.mutedBox}${popupHeader}${'─'.repeat(fillLen)}╮${colors.reset}`);
+
+            visibleMatches.forEach((m, idx) => {
+              const isSelected = idx === state.selectedAutocompleteIdx;
+              const pointer = isSelected ? `${colors.butterGold}❯${colors.reset}` : ' ';
+              const hint = m.argsHint ? ` ${colors.dim}${m.argsHint}${colors.reset}` : '';
+              const cmdText = isSelected
+                ? `${colors.bold}${colors.butterGold}${m.command}${colors.reset}${hint}`
+                : `${colors.bold}${colors.butterCream}${m.command}${colors.reset}${hint}`;
+
+              const descText = `${colors.gray}• ${m.description}${colors.reset}`;
+              const visibleCmdLen = stripAnsi(cmdText).length;
+              const padCmd = Math.max(1, 24 - visibleCmdLen);
+              const lineContent = `  ${pointer} ${cmdText}${' '.repeat(padCmd)} ${descText}`;
+              drawnLines.push(formatBoxLine(lineContent, colors.mutedBox));
+            });
+
+            if (state.autocompleteMatches.length > maxDisplay) {
+              const remaining = state.autocompleteMatches.length - maxDisplay;
+              const moreLine = `    ${colors.dim}... and ${remaining} more commands${colors.reset}`;
+              drawnLines.push(formatBoxLine(moreLine, colors.mutedBox));
+            }
+            drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}`);
           }
         }
-
-        // Bottom border with status & shortcut hints
-        const turnsInfo = options.turns !== undefined && options.turns > 0 ? `${options.turns}t ` : '';
-        const tokInfo = options.tokens !== undefined && options.tokens > 0 ? `~${Math.round(options.tokens / 1000)}k tok` : '';
-        const stats = `${turnsInfo}${tokInfo}`.trim();
-        const statsTag = stats ? ` [${stats}] ` : '';
-
-        const footerHints = ` Enter send • Shift+Enter newline • Tab complete • /menu `;
-        const leftFooterLen = stripAnsi(footerHints).length;
-        const rightStatsLen = stripAnsi(statsTag).length;
-        const bottomFill = Math.max(0, cols - leftFooterLen - rightStatsLen - 5);
-
-        drawnLines.push(
-          `${colors.butterCrust}╰──${colors.dim}${footerHints}${colors.reset}${colors.butterCrust}${'─'.repeat(bottomFill)}${statsTag ? `${colors.dim}${statsTag}${colors.reset}${colors.butterCrust}─` : '─'}╯${colors.reset}`
-        );
 
         // Write all lines
         stdout.write(drawnLines.join('\n'));
         lastRenderedLinesCount = drawnLines.length;
 
-        // Position cursor exactly at lineIdx and colIdx
-        const targetRow = 1 + coords.lineIdx;
+        // Position cursor exactly at targetRow and targetCol
         const linesToMoveUp = (drawnLines.length - 1) - targetRow;
         if (linesToMoveUp > 0) {
           stdout.write(`\x1b[${linesToMoveUp}A`);
-        }
-
-        let targetCol = 4 + coords.colIdx;
-        if (isMultiLine) {
-          targetCol = 2 + maxLineNumDigits + 3 + 2 + coords.colIdx;
         }
         stdout.write(`\x1b[${targetCol}G`);
         lastCursorRow = targetRow;
