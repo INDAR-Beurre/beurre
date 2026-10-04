@@ -67,4 +67,18 @@ describe('Butter Melt Context Compactor', () => {
     expect(content).toContain('bun test');
     expect(content).toContain('Repeat check and improve coverage.');
   });
+
+  it('should format clean summary without loop iteration header in interactive REPL mode', () => {
+    const messages: ChatMessage[] = [
+      { role: 'system', content: 'You are Beurre.' },
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi' },
+      { role: 'user', content: 'what is 2+2?' },
+      { role: 'assistant', content: '4' },
+    ];
+    const compacted = compactMessages(messages, { isLoop: false });
+    expect(compacted.length).toBe(2);
+    expect(compacted[1].content).toContain('Active Session Compacted');
+    expect(compacted[1].content).not.toContain('Recurring Prompt for Loop');
+  });
 });

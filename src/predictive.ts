@@ -72,6 +72,12 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Core',
   },
   {
+    command: '/think',
+    argsHint: '[expand|collapse|hide]',
+    description: 'Toggle collapsible thinking blocks or inspect full reasoning trace',
+    category: 'Core',
+  },
+  {
     command: '/exit',
     description: 'Save butter state and exit CLI',
     category: 'Core',

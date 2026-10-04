@@ -7,7 +7,7 @@ export interface AgentCallbacks {
   onToken?: (token: string) => void;
   onReasoning?: (reasoning: string) => void;
   onToolStart?: (name: string, args: Record<string, any>) => void;
-  onToolEnd?: (name: string, output: string, isError?: boolean) => void;
+  onToolEnd?: (name: string, output: string, isError?: boolean, diff?: string) => void;
   onStatus?: (status: string) => void;
 }
 
@@ -143,7 +143,7 @@ Guidelines:
           },
         });
 
-        callbacks.onToolEnd?.(tc.name, toolRes.output, toolRes.isError);
+        callbacks.onToolEnd?.(tc.name, toolRes.output, toolRes.isError, toolRes.diff);
 
         this.messages.push({
           role: 'tool',

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { relay } from './relay.ts';
 import { runNamedSubagent } from './subagents.ts';
+import { generateDiffCard } from './diff.ts';
 
 export interface ToolDefinition {
   type: 'function';
@@ -24,6 +25,7 @@ export interface ToolResult {
   name: string;
   output: string;
   isError?: boolean;
+  diff?: string;
 }
 
 export const BEURRE_TOOLS: ToolDefinition[] = [
@@ -162,8 +164,15 @@ export async function executeTool(
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
+        const prevContent = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : '';
         fs.writeFileSync(filePath, args.content, 'utf-8');
-        return { tool_call_id: toolCallId, name, output: `Successfully wrote ${args.content.length} characters to ${args.path}` };
+        const diffCard = generateDiffCard(prevContent, args.content, args.path);
+        return {
+          tool_call_id: toolCallId,
+          name,
+          output: `Successfully wrote ${args.content.length} characters to ${args.path}`,
+          diff: diffCard.hasChanges ? diffCard.formatted : undefined,
+        };
       }
 
       case 'edit': {
@@ -190,7 +199,13 @@ export async function executeTool(
         }
         const updated = content.replace(oldText, newText ?? '');
         fs.writeFileSync(filePath, updated, 'utf-8');
-        return { tool_call_id: toolCallId, name, output: `Successfully edited ${args.path}` };
+        const diffCard = generateDiffCard(content, updated, args.path);
+        return {
+          tool_call_id: toolCallId,
+          name,
+          output: `Successfully edited ${args.path}`,
+          diff: diffCard.hasChanges ? diffCard.formatted : undefined,
+        };
       }
 
       case 'bash': {

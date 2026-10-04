@@ -31,6 +31,7 @@ export const colors = {
   bgButterMelt: '\x1b[48;2;245;158;11m\x1b[30m',
   bgCrust: '\x1b[48;2;217;119;6m\x1b[37m',
   bgDark: '\x1b[48;2;28;25;23m',
+  bgGray: '\x1b[48;2;44;41;38m',
 };
 
 export const b = {
@@ -54,10 +55,22 @@ export function getGitBranch(cwd: string): string | null {
     const branch = execSync('git rev-parse --abbrev-ref HEAD 2>/dev/null', {
       cwd,
       encoding: 'utf-8',
+      timeout: 1000,
     }).trim();
     return branch || null;
   } catch {
     return null;
+  }
+}
+
+export function getGitStatus(cwd: string): { branch: string | null; isDirty: boolean } {
+  const branch = getGitBranch(cwd);
+  if (!branch) return { branch: null, isDirty: false };
+  try {
+    const status = execSync('git status --porcelain 2>/dev/null', { cwd, encoding: 'utf-8', timeout: 1000 }).trim();
+    return { branch, isDirty: status.length > 0 };
+  } catch {
+    return { branch, isDirty: false };
   }
 }
 
@@ -88,8 +101,8 @@ export function claudePromptHeader(model: string, cwd: string): string {
 
 export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process.cwd()): string {
   const shortPath = formatShortCwd(cwd);
-  const branch = getGitBranch(cwd);
-  const gitInfo = branch ? ` (git: ${branch})` : '';
+  const git = getGitStatus(cwd);
+  const gitInfo = git.branch ? ` (git: ${git.branch}${git.isDirty ? '*' : ''})` : '';
 
   return `
 ${colors.butterGold}${colors.bold}🧈 BEURRE${colors.reset} ${colors.dim}v${version} — L'Agent Fondant & Autonome (Claude Code / OMP Style)${colors.reset}
@@ -100,6 +113,67 @@ ${colors.dim}──────────────────────�
   ${b.bold('Control:')}    Type ${b.gold('/menu')} for options, ${b.gold('/loop')} for prompt loop, ${b.gold('/help')} for commands
 ${colors.dim}─────────────────────────────────────────────────────────────────────────────${colors.reset}
 `;
+}
+
+export interface StatusBarOptions {
+  model: string;
+  cwd: string;
+  turns?: number;
+  tokens?: number;
+  status?: string;
+  isBusy?: boolean;
+}
+
+export function statusBar(options: StatusBarOptions): string {
+  const cols = Math.min(process.stdout.columns || 80, 80);
+  const shortPath = formatShortCwd(options.cwd);
+  const git = getGitStatus(options.cwd);
+  const gitTag = git.branch ? ` (${git.branch}${git.isDirty ? '*' : ''})` : '';
+
+  const left = ` 🧈 ${colors.bold}${colors.butterGold}${options.model}${colors.reset} ${colors.dim}│${colors.reset} ${colors.butterCream}${shortPath}${colors.dim}${gitTag}${colors.reset}`;
+
+  const turnsText = options.turns !== undefined ? `Turns: ${options.turns} ` : '';
+  const tokensText = options.tokens !== undefined ? `~${Math.round(options.tokens / 1000)}k tok ` : '';
+  const statusIndicator = options.isBusy
+    ? `${colors.butterGold}● working...${colors.reset}`
+    : `${colors.green}● LIVE${colors.reset}`;
+
+  const right = `${colors.dim}${turnsText}${tokensText}│${colors.reset} ${statusIndicator} `;
+
+  // Strip ansi for width calculation
+  const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
+  const leftLen = stripAnsi(left).length;
+  const rightLen = stripAnsi(right).length;
+
+  if (cols < leftLen + rightLen + 4) {
+    // Compact single-line bar for narrow terminals
+    return `${colors.butterGold}🧈 [${options.model}]${colors.reset} ${colors.butterCream}${shortPath}${colors.dim}${gitTag}${colors.reset} ${statusIndicator}`;
+  }
+
+  const spaces = Math.max(1, cols - leftLen - rightLen - 2);
+
+  const topBorder = `${colors.butterMelt}╭${'─'.repeat(cols - 2)}╮${colors.reset}`;
+  const content = `${colors.butterMelt}│${colors.reset}${left}${' '.repeat(spaces)}${right}${colors.butterMelt}│${colors.reset}`;
+  const bottomBorder = `${colors.butterMelt}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
+
+  return `${topBorder}\n${content}\n${bottomBorder}`;
+}
+
+export function renderErrorCard(title: string, message: string): string {
+  const cols = Math.min(process.stdout.columns || 80, 80);
+  const header = ` ⚠️ ${title} `;
+  const borderLen = Math.max(0, cols - header.length - 3);
+
+  const top = `${colors.red}╭──${colors.bold}${header}${colors.reset}${colors.red}${'─'.repeat(borderLen)}╮${colors.reset}`;
+  const bottom = `${colors.red}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
+
+  const lines = message.split('\n').map((l) => `${colors.red}│${colors.reset}  ${l}`);
+  return `\n${top}\n${lines.join('\n')}\n${bottom}\n`;
+}
+
+export function renderToast(message: string, isSuccess = true): string {
+  const icon = isSuccess ? `${colors.green}✔${colors.reset}` : `${colors.red}✖${colors.reset}`;
+  return `${colors.bgGray} ${icon} ${colors.bold}${message} ${colors.reset}`;
 }
 
 export function formatClaudeToolCall(name: string, args: Record<string, any>): string {

@@ -1,5 +1,6 @@
 import { BeurreAgent } from './agent.ts';
 import { compactMessages } from './compact.ts';
+import { formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts';
 import { b, colors, ButterSpinner, formatClaudeToolCall, formatClaudeToolResult } from './theme.ts';
 
 export interface LoopOptions {
@@ -25,7 +26,6 @@ export class BeurreLoopRunner {
     const onSigInt = () => {
       console.log(`\n${b.melt('🧈')} ${b.gold('Loop interrupted by user (Ctrl+C). Saving butter state and stopping...')}`);
       this.stop();
-      process.exit(0);
     };
 
     process.on('SIGINT', onSigInt);
@@ -44,40 +44,57 @@ export class BeurreLoopRunner {
         // Run turn
         spinner.start(`Iteration #${this.currentIteration} executing...`);
         let hasTokens = false;
-        let lastReasonUpdate = 0;
+        let accumulatedReasoning = '';
+        let thinkingRendered = false;
+        const streamHighlighter = new StreamingMarkdownHighlighter();
+
+        const renderThinkingIfNeeded = () => {
+          if (accumulatedReasoning && !thinkingRendered) {
+            spinner.stop();
+            console.log('\n' + formatThinkingBlock(accumulatedReasoning));
+            thinkingRendered = true;
+          }
+        };
 
         try {
           await agent.runTurn(
             prompt,
             {
               onStatus: (st) => spinner.update(st),
+              onReasoning: (reasoning) => {
+                accumulatedReasoning += reasoning;
+                if (!hasTokens) {
+                  const snippet = accumulatedReasoning.slice(-30).trim();
+                  spinner.update(`Thinking (${snippet})...`);
+                }
+              },
               onToken: (tok) => {
                 if (!hasTokens) {
                   spinner.stop();
+                  renderThinkingIfNeeded();
                   hasTokens = true;
-                  process.stdout.write(`${b.gold('🧈')} `);
+                  process.stdout.write(`\n${b.gold('🧈')} `);
                 }
-                process.stdout.write(tok);
-              },
-              onReasoning: (reasoning) => {
-                const now = Date.now();
-                if (!hasTokens && now - lastReasonUpdate > 300) {
-                  lastReasonUpdate = now;
-                  spinner.update(`Thinking (${reasoning.slice(-30).trim()})...`);
-                }
+                streamHighlighter.feed(tok);
               },
               onToolStart: (name, args) => {
                 if (hasTokens) {
+                  streamHighlighter.flush();
                   console.log();
                   hasTokens = false;
                 }
                 spinner.stop();
+                renderThinkingIfNeeded();
                 console.log(`\n${formatClaudeToolCall(name, args)}`);
                 spinner.start(`Executing ${name}...`);
               },
-              onToolEnd: (name, output, isError) => {
+              onToolEnd: (name, output, isError, diff) => {
                 spinner.stop();
-                console.log(formatClaudeToolResult(output, isError));
+                if (diff) {
+                  console.log('\n' + diff);
+                } else {
+                  console.log(formatClaudeToolResult(output, isError));
+                }
               },
             },
             this.abortController.signal
@@ -88,7 +105,9 @@ export class BeurreLoopRunner {
           console.error(`\n${b.red('Error in loop turn:')} ${err.message}`);
         }
 
+        renderThinkingIfNeeded();
         if (hasTokens) {
+          streamHighlighter.flush();
           console.log();
         } else {
           spinner.stop();

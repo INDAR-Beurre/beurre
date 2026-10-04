@@ -16,6 +16,11 @@ describe('Predictive Slash Command Engine', () => {
     expect(matches[0].command).toBe('/loop');
   });
 
+  it('should match commands starting with /t for /think', () => {
+    const matches = getPredictiveMatches('/t');
+    expect(matches.some((m) => m.command === '/think')).toBe(true);
+  });
+
   it('should match all commands on single /', () => {
     const matches = getPredictiveMatches('/');
     expect(matches.length).toBe(SLASH_COMMANDS.length);

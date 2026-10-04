@@ -11,6 +11,7 @@ import {
   formatClaudeToolCall,
   formatClaudeToolResult,
 } from './theme.ts';
+import { formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts';
 
 function printHelp(): void {
   console.log(`
@@ -159,37 +160,55 @@ async function main(): Promise<void> {
     spinner.start('Thinking...');
     let hasTokens = false;
 
-    let lastReasonUpdate = 0;
+    let accumulatedReasoning = '';
+    let thinkingRendered = false;
+    const streamHighlighter = new StreamingMarkdownHighlighter();
+
+    const renderThinkingIfNeeded = () => {
+      if (accumulatedReasoning && !thinkingRendered) {
+        spinner.stop();
+        console.log('\n' + formatThinkingBlock(accumulatedReasoning));
+        thinkingRendered = true;
+      }
+    };
+
     try {
       await agent.runTurn(prompt, {
         onStatus: (st) => spinner.update(st),
+        onReasoning: (reasoning) => {
+          accumulatedReasoning += reasoning;
+          if (!hasTokens) {
+            const snippet = accumulatedReasoning.slice(-30).trim();
+            spinner.update(`Thinking (${snippet})...`);
+          }
+        },
         onToken: (tok) => {
           if (!hasTokens) {
             spinner.stop();
+            renderThinkingIfNeeded();
             hasTokens = true;
             process.stdout.write(`${b.gold('🧈')} `);
           }
-          process.stdout.write(tok);
-        },
-        onReasoning: (reasoning) => {
-          const now = Date.now();
-          if (!hasTokens && now - lastReasonUpdate > 300) {
-            lastReasonUpdate = now;
-            spinner.update(`Thinking (${reasoning.slice(-30).trim()})...`);
-          }
+          streamHighlighter.feed(tok);
         },
         onToolStart: (name, args) => {
           if (hasTokens) {
+            streamHighlighter.flush();
             console.log();
             hasTokens = false;
           }
           spinner.stop();
+          renderThinkingIfNeeded();
           console.log(`\n${formatClaudeToolCall(name, args)}`);
           spinner.start(`Executing ${name}...`);
         },
-        onToolEnd: (name, output, isError) => {
+        onToolEnd: (name, output, isError, diff) => {
           spinner.stop();
-          console.log(formatClaudeToolResult(output, isError));
+          if (diff) {
+            console.log('\n' + diff);
+          } else {
+            console.log(formatClaudeToolResult(output, isError));
+          }
         },
       });
     } catch (err: any) {
@@ -198,7 +217,9 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
+    renderThinkingIfNeeded();
     if (hasTokens) {
+      streamHighlighter.flush();
       console.log();
     } else {
       spinner.stop();

@@ -12,6 +12,9 @@
     "test": "bun test",
     "link": "mkdir -p ~/.bun/bin ~/.local/bin && ln -sf $(pwd)/bin/beurre ~/.bun/bin/beurre && ln -sf $(pwd)/bin/beurre ~/.local/bin/beurre"
   },
+  "dependencies": {
+    "@oh-my-pi/pi-tui": "18.6.0"
+  },
   "keywords": [
     "agent",
     "cli",

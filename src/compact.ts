@@ -1,11 +1,12 @@
 import type { ChatMessage } from './relay.ts';
 
 export interface CompactOptions {
-  iteration: number;
-  prompt: string;
+  iteration?: number;
+  prompt?: string;
+  isLoop?: boolean;
 }
 
-export function compactMessages(messages: ChatMessage[], options: CompactOptions): ChatMessage[] {
+export function compactMessages(messages: ChatMessage[], options: CompactOptions = {}): ChatMessage[] {
   if (messages.length <= 3) {
     return messages;
   }
@@ -43,7 +44,6 @@ export function compactMessages(messages: ChatMessage[], options: CompactOptions
         }
       }
       if (msg.content && msg.content.trim()) {
-        // Take the last sentence or first 200 chars of assistant thought
         const trimmed = msg.content.trim();
         const snippet = trimmed.length > 250 ? `${trimmed.slice(0, 250)}...` : trimmed;
         assistantSummaries.push(snippet);
@@ -54,9 +54,14 @@ export function compactMessages(messages: ChatMessage[], options: CompactOptions
   const recentSummaries = assistantSummaries.slice(-3);
   const recentCommands = bashCommands.slice(-4);
 
+  const isLoop = options.isLoop ?? (options.iteration !== undefined && options.iteration > 0);
+  const iterLabel = options.iteration !== undefined ? ` #${options.iteration}` : '';
+
   const lines: string[] = [
-    `🧈 [BEURRE CONTEXT MELT — COMPACTION ROLLUP FOR ITERATION #${options.iteration}]`,
-    `Previous loop iteration #${options.iteration} finished. Context has been compacted to preserve memory.`,
+    `🧈 [BEURRE CONTEXT MELT — COMPACTED SESSION ROLLUP${iterLabel}]`,
+    isLoop
+      ? `Previous loop iteration${iterLabel} finished. Context has been compacted to preserve memory.`
+      : `Conversation context has been compacted to preserve memory.`,
   ];
 
   if (filesModified.size > 0) {
@@ -82,9 +87,13 @@ export function compactMessages(messages: ChatMessage[], options: CompactOptions
     newMessages.push(systemMsg);
   }
 
+  const tailText = isLoop
+    ? `\n\n[Recurring Prompt for Loop Iteration #${(options.iteration ?? 1) + 1}]:\n${options.prompt ?? 'Continue working.'}`
+    : `\n\n[Active Session Compacted]: Context rolled up successfully. Continuing conversation with user.`;
+
   newMessages.push({
     role: 'user',
-    content: `${compactedText}\n\n[Recurring Prompt for Loop Iteration #${options.iteration + 1}]:\n${options.prompt}`,
+    content: `${compactedText}${tailText}`,
   });
 
   return newMessages;

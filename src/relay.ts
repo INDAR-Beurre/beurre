@@ -1,4 +1,9 @@
+import dns from 'node:dns';
 import { loadConfig, extractCookie } from './config.ts';
+
+if (dns.setDefaultResultOrder) {
+  dns.setDefaultResultOrder('ipv4first');
+}
 
 export interface RelayModel {
   id: string;
@@ -88,14 +93,14 @@ export class RelayClient {
       return this.modelsCache;
     }
 
-    const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl];
+    const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl].filter(Boolean);
     let lastError: Error | null = null;
 
     for (const baseUrl of endpoints) {
       try {
         const res = await fetch(`${baseUrl}/models`, {
           headers: this.getAuthHeaders(),
-          signal: AbortSignal.timeout(6000),
+          signal: AbortSignal.timeout(12000),
         });
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -107,9 +112,11 @@ export class RelayClient {
             ? data.data
             : [];
 
-        this.modelsCache = list;
-        this.cacheExpiry = now + this.CACHE_TTL_MS;
-        return list;
+        if (list.length > 0) {
+          this.modelsCache = list;
+          this.cacheExpiry = now + this.CACHE_TTL_MS;
+          return list;
+        }
       } catch (err: any) {
         lastError = err;
       }
@@ -122,17 +129,17 @@ export class RelayClient {
   }
 
   async fetchProviders(): Promise<RelayProvider[]> {
-    const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl];
+    const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl].filter(Boolean);
     for (const baseUrl of endpoints) {
       try {
         const res = await fetch(`${baseUrl}/providers`, {
           headers: this.getAuthHeaders(),
-          signal: AbortSignal.timeout(6000),
+          signal: AbortSignal.timeout(12000),
         });
         if (res.ok) {
           const data = (await res.json()) as any;
-          if (Array.isArray(data.providers)) return data.providers;
-          if (Array.isArray(data)) return data;
+          if (Array.isArray(data.providers) && data.providers.length > 0) return data.providers;
+          if (Array.isArray(data) && data.length > 0) return data;
         }
       } catch {
         // try fallback
@@ -245,6 +252,8 @@ export class RelayClient {
         let finishReason: string | undefined;
         const toolCallsMap = new Map<number, { id: string; name: string; args: string }>();
 
+        let inThinkTag = false;
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -279,10 +288,40 @@ export class RelayClient {
                   options.onReasoning?.(reasonDelta);
                 }
 
-                // Main content
+                // Main content & inline think tags handling
                 if (delta.content) {
-                  content += delta.content;
-                  options.onToken?.(delta.content);
+                  let chunk = delta.content;
+                  if (!inThinkTag && (chunk.includes('<think>') || chunk.includes('<thought>'))) {
+                    const tag = chunk.includes('<think>') ? '<think>' : '<thought>';
+                    const parts = chunk.split(tag);
+                    if (parts[0]) {
+                      content += parts[0];
+                      options.onToken?.(parts[0]);
+                    }
+                    inThinkTag = true;
+                    chunk = parts.slice(1).join(tag);
+                  }
+
+                  if (inThinkTag) {
+                    const closeTag = chunk.includes('</think>') ? '</think>' : chunk.includes('</thought>') ? '</thought>' : null;
+                    if (closeTag) {
+                      const parts = chunk.split(closeTag);
+                      reasoning += parts[0];
+                      options.onReasoning?.(parts[0]);
+                      inThinkTag = false;
+                      const rest = parts.slice(1).join(closeTag);
+                      if (rest) {
+                        content += rest;
+                        options.onToken?.(rest);
+                      }
+                    } else {
+                      reasoning += chunk;
+                      options.onReasoning?.(chunk);
+                    }
+                  } else {
+                    content += chunk;
+                    options.onToken?.(chunk);
+                  }
                 }
 
                 // Tool calls

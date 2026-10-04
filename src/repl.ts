@@ -1,106 +1,132 @@
-import readline from 'node:readline';
 import { BeurreAgent } from './agent.ts';
 import { relay } from './relay.ts';
 import { listSubagents, runNamedSubagent } from './subagents.ts';
 import { compactMessages } from './compact.ts';
 import { BeurreLoopRunner } from './loop.ts';
 import { showMenu } from './menu.ts';
+import { openModelPicker } from './model-picker.ts';
+import { BeurreEditor } from './editor.ts';
+import { renderMarkdownBlock, formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts';
 import {
   b,
   colors,
   banner,
+  statusBar,
   ButterSpinner,
   formatClaudeToolCall,
   formatClaudeToolResult,
-  formatShortCwd,
-  getGitBranch,
+  renderErrorCard,
+  renderToast,
 } from './theme.ts';
-
-import { openModelPicker } from './model-picker.ts';
 import { SLASH_COMMANDS, getPredictiveMatches, formatPredictiveHints } from './predictive.ts';
 
 export async function startRepl(initialModel?: string): Promise<void> {
   const agent = new BeurreAgent({ model: initialModel });
-  
-  // Render Claude Code / OMP Style Welcome Banner
+  const editor = new BeurreEditor(['/menu', '/models', '/subagents', '/loop', '/help']);
+
+  // Initial banner
+  console.clear();
   console.log(banner('1.0.0', agent.getModel(), agent.getCwd()));
 
-  const completer = (line: string): [string[], string] => {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('/')) {
-      const matches = getPredictiveMatches(trimmed);
-      if (matches.length > 0) {
-        if (matches.length > 1) {
-          process.stdout.write('\n' + formatPredictiveHints(matches) + '\n');
-        }
-        return [matches.map((m) => m.command), line];
-      }
+  let totalTokensEstimate = 0;
+  let activeAbortController: AbortController | null = null;
+  let thinkingMode: 'expanded' | 'collapsed' | 'hidden' = 'expanded';
+  let lastReasoning = '';
+
+  // Graceful interrupt handling for active turns
+  const onSigInt = () => {
+    if (activeAbortController) {
+      activeAbortController.abort();
+      console.log(`\n${colors.butterMelt}🧈 Turn interrupted by user.${colors.reset}\n`);
     }
-    return [SLASH_COMMANDS.map((m) => m.command), line];
   };
+  process.on('SIGINT', onSigInt);
 
-  const getPromptString = () => {
-    const shortCwd = formatShortCwd(agent.getCwd());
-    const branch = getGitBranch(agent.getCwd());
-    const gitTag = branch ? `${colors.dim}(${branch})${colors.reset}` : '';
-    return `${colors.butterGold}🧈 beurre${colors.reset} ${colors.dim}[${agent.getModel()}]${colors.reset} ${colors.butterCream}${shortCwd}${gitTag}${colors.reset}\n${colors.butterMelt}>${colors.reset} `;
-  };
+  while (true) {
+    const messages = agent.getMessages();
+    const turnsCount = messages.filter((m) => m.role === 'user' || m.role === 'assistant').length;
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    completer,
-    prompt: getPromptString(),
-  });
+    let rawInput = '';
+    try {
+      rawInput = await editor.readPrompt({
+        model: agent.getModel(),
+        cwd: agent.getCwd(),
+        turns: turnsCount,
+        tokens: totalTokensEstimate,
+      });
+    } catch {
+      break;
+    }
 
-  rl.prompt();
-
-  rl.on('line', async (line) => {
-    const trimmed = line.trim();
+    const trimmed = rawInput.trim();
     if (!trimmed) {
-      rl.prompt();
-      return;
+      continue;
     }
 
+    // Handle Slash Commands
     if (trimmed.startsWith('/')) {
       const [cmd, ...args] = trimmed.split(' ');
       const rest = args.join(' ').trim();
 
-      // If user typed only '/' or incomplete prefix, show predictive hints
       if (cmd === '/') {
         console.log('\n' + formatPredictiveHints(SLASH_COMMANDS) + '\n');
-        rl.prompt();
-        return;
+        continue;
       }
 
       switch (cmd.toLowerCase()) {
         case '/menu': {
-          rl.pause();
-          await showMenu(agent, rl);
-          rl.setPrompt(getPromptString());
-          rl.resume();
+          await showMenu(agent, undefined, {
+            thinkingMode,
+            onToggleThinking: (mode) => {
+              thinkingMode = mode;
+            },
+          });
           break;
         }
 
         case '/models':
         case '/model': {
           if (!rest) {
-            rl.pause();
             await openModelPicker(agent.getModel(), (newModel) => {
               agent.setModel(newModel);
             });
-            rl.setPrompt(getPromptString());
-            rl.resume();
           } else {
             agent.setModel(rest);
-            console.log(`${b.green('🧈 Model switched to:')} ${b.gold(rest)}`);
-            rl.setPrompt(getPromptString());
+            console.log(`\n${renderToast(`Model switched to: ${rest}`, true)}\n`);
           }
           break;
         }
 
-        case '/help': {
-          console.log('\n' + formatPredictiveHints(SLASH_COMMANDS) + '\n');
+        case '/think':
+        case '/thinking': {
+          if (!rest) {
+            if (lastReasoning) {
+              console.log('\n' + formatThinkingBlock(lastReasoning, false) + '\n');
+            } else {
+              thinkingMode = thinkingMode === 'expanded' ? 'collapsed' : 'expanded';
+              console.log(`\n${renderToast(`Thinking block display set to: ${thinkingMode}`, true)}\n`);
+            }
+          } else {
+            const mode = rest.toLowerCase();
+            if (mode.startsWith('exp')) {
+              thinkingMode = 'expanded';
+              console.log(`\n${renderToast('Thinking block mode set to: expanded (full card)', true)}\n`);
+            } else if (mode.startsWith('col')) {
+              thinkingMode = 'collapsed';
+              console.log(`\n${renderToast('Thinking block mode set to: collapsed (one-line summary)', true)}\n`);
+            } else if (mode.startsWith('hid') || mode === 'off') {
+              thinkingMode = 'hidden';
+              console.log(`\n${renderToast('Thinking block mode set to: hidden', true)}\n`);
+            } else if (mode === 'show' || mode === 'last') {
+              if (lastReasoning) {
+                console.log('\n' + formatThinkingBlock(lastReasoning, false) + '\n');
+              } else {
+                console.log(`\n${b.dim('No prior reasoning trace recorded in this session.')}\n`);
+              }
+            } else {
+              console.log(`\n${b.red('Usage:')} /think [expand|collapse|hide|show]\n`);
+            }
+          }
           break;
         }
 
@@ -115,16 +141,17 @@ export async function startRepl(initialModel?: string): Promise<void> {
               const status = p.live ? b.green('● LIVE') : b.red('○ DOWN');
               console.log(`  ${status} ${b.bold(p.name.padEnd(20))} ${b.dim(`${p.models || 0} models`)}`);
             }
+            console.log();
           } catch (err: any) {
             spinner.stop();
-            console.error(`${b.red('Error:')} ${err.message}`);
+            console.log(renderErrorCard('Relay Providers Error', err.message));
           }
           break;
         }
 
         case '/subagents': {
-          const subs = listSubagents();
           console.log(`\n${b.gold('🧈 NATIVE NAMED SUBAGENTS')} (Each with designated persona & model ID):\n`);
+          const subs = listSubagents();
           for (const s of subs) {
             console.log(`  ${b.subagentBadge(s.name)} ${b.dim(`[Model: ${s.modelId}]`)}`);
             console.log(`    Role: ${b.cream(s.role)}`);
@@ -137,18 +164,19 @@ export async function startRepl(initialModel?: string): Promise<void> {
           const [subName, ...taskParts] = rest.split(' ');
           const task = taskParts.join(' ').trim();
           if (!subName || !task) {
-            console.log(`${b.red('Usage:')} /subagent <name> <task>`);
+            console.log(`\n${b.red('Usage:')} /subagent <name> <task>\n`);
           } else {
             const spinner = new ButterSpinner();
             spinner.start(`Dispatching to subagent ${subName}...`);
             try {
               const result = await runNamedSubagent(subName, task, agent.getCwd());
               spinner.stop();
-              console.log(`\n${b.subagentBadge(result.subagentName)} ${b.dim(`(Model: ${result.modelId}, Turns: ${result.turns})`)}`);
-              console.log(result.summary);
+              console.log(`\n${b.subagentBadge(result.subagentName)} ${b.dim(`[Model: ${result.modelId} | Turns: ${result.turns}]`)}`);
+              console.log(renderMarkdownBlock(result.summary));
+              console.log();
             } catch (err: any) {
               spinner.stop();
-              console.error(`${b.red('Subagent error:')} ${err.message}`);
+              console.log(renderErrorCard('Subagent Execution Error', err.message));
             }
           }
           break;
@@ -156,12 +184,10 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
         case '/loop': {
           if (!rest) {
-            console.log(`${b.red('Usage:')} /loop <prompt to repeat>`);
+            console.log(`\n${b.red('Usage:')} /loop <prompt to repeat>\n`);
           } else {
-            rl.pause();
             const runner = new BeurreLoopRunner();
             await runner.start(agent, rest);
-            rl.resume();
           }
           break;
         }
@@ -170,11 +196,11 @@ export async function startRepl(initialModel?: string): Promise<void> {
           const before = agent.getMessages().length;
           const compacted = compactMessages(agent.getMessages(), {
             iteration: 1,
-            prompt: 'Continue working.',
+            isLoop: false,
           });
           agent.setMessages(compacted);
           const after = agent.getMessages().length;
-          console.log(`${b.melt('🧈 Butter Melt Compactor:')} Condensed ${before} messages -> ${after} messages.`);
+          console.log(`\n${renderToast(`Context compacted: ${before} turns → ${after} turns`, true)}\n`);
           break;
         }
 
@@ -188,95 +214,137 @@ export async function startRepl(initialModel?: string): Promise<void> {
           });
           spinner.stop();
           if (ok) {
-            console.log(`${b.green('🧈 Synced!')} Session available at ${b.cyan('https://relay-gw.pages.dev')}`);
+            console.log(`\n${renderToast('Synced session to https://relay-gw.pages.dev', true)}\n`);
           } else {
-            console.log(`${b.dim('Session saved locally (web sync response was quiet).')}`);
+            console.log(`\n${b.dim('Session recorded locally (web sync response was quiet).')}\n`);
           }
           break;
         }
 
         case '/history': {
           const msgs = agent.getMessages();
-          console.log(`${b.cream('Current session messages:')} ${b.gold(msgs.length)}`);
+          console.log(`\n${b.bold('Session ID:')}     ${b.gold(agent.getSessionId())}`);
+          console.log(`  ${b.bold('Active Model:')}   ${b.gold(agent.getModel())}`);
+          console.log(`  ${b.bold('Total Messages:')} ${b.gold(msgs.length)}`);
+          console.log(`  ${b.bold('Est. Tokens:')}    ${b.gold(totalTokensEstimate)}\n`);
           break;
         }
 
-        case '/clear':
+        case '/clear': {
           console.clear();
           console.log(banner('1.0.0', agent.getModel(), agent.getCwd()));
           break;
+        }
+
+        case '/help': {
+          console.log('\n' + formatPredictiveHints(SLASH_COMMANDS) + '\n');
+          break;
+        }
 
         case '/exit':
-        case '/quit':
+        case '/quit': {
           console.log(`\n${b.melt('🧈 Au revoir!')}\n`);
+          process.off('SIGINT', onSigInt);
           process.exit(0);
           break;
+        }
 
-        default:
-          console.log(`${b.red('Unknown command:')} ${cmd}. Type ${b.gold('/menu')} or ${b.gold('/help')} for options.`);
+        default: {
+          console.log(`\n${b.red('Unknown command:')} ${cmd}. Type ${b.gold('/menu')} or ${b.gold('/help')} for options.\n`);
+        }
       }
-
-      console.log();
-      rl.prompt();
-      return;
+      continue;
     }
 
-    // Claude Code / OMP Style Execution Turn
+    // Normal Turn Execution with Streaming, Thinking Blocks, Diffs & Clean Error Recovery
+    console.log(`\n${b.gold('🧈 you')} ${b.melt('>')} ${trimmed}`);
+
+    activeAbortController = new AbortController();
     const spinner = new ButterSpinner();
-    spinner.start('Thinking...');
-    let hasOutput = false;
-    let lastReasonUpdate = 0;
+    spinner.start('Whipping up solution...');
+
+    let accumulatedResponse = '';
+    let accumulatedReasoning = '';
+    let thinkingBlockRendered = false;
+    let hasStartedTokenStream = false;
+
+    const streamHighlighter = new StreamingMarkdownHighlighter();
+
+    const renderThinkingIfNeeded = () => {
+      if (accumulatedReasoning && !thinkingBlockRendered && thinkingMode !== 'hidden') {
+        spinner.stop();
+        const isCollapsed = thinkingMode === 'collapsed';
+        console.log('\n' + formatThinkingBlock(accumulatedReasoning, isCollapsed));
+        thinkingBlockRendered = true;
+        lastReasoning = accumulatedReasoning;
+      }
+    };
 
     try {
-      await agent.runTurn(trimmed, {
-        onStatus: (st) => spinner.update(st),
-        onToken: (tok) => {
-          if (!hasOutput) {
+      await agent.runTurn(
+        trimmed,
+        {
+          onStatus: (st) => spinner.update(st),
+          onReasoning: (res) => {
+            accumulatedReasoning += res;
+            lastReasoning = accumulatedReasoning;
+            if (!hasStartedTokenStream) {
+              const snippet = accumulatedReasoning.slice(-30).trim();
+              spinner.update(`Thinking (${snippet})...`);
+            }
+          },
+          onToken: (tok) => {
+            if (!hasStartedTokenStream) {
+              spinner.stop();
+              renderThinkingIfNeeded();
+              hasStartedTokenStream = true;
+              process.stdout.write(`\n${colors.butterGold}🧈${colors.reset} `);
+            }
+            accumulatedResponse += tok;
+            streamHighlighter.feed(tok);
+          },
+          onToolStart: (name, args) => {
+            if (hasStartedTokenStream) {
+              streamHighlighter.flush();
+              console.log();
+              hasStartedTokenStream = false;
+            }
             spinner.stop();
-            hasOutput = true;
-            process.stdout.write(`\n`);
-          }
-          process.stdout.write(tok);
+            renderThinkingIfNeeded();
+            console.log(`\n${formatClaudeToolCall(name, args)}`);
+            spinner.start(`Executing ${name}...`);
+          },
+          onToolEnd: (name, output, isError, diff) => {
+            spinner.stop();
+            if (diff) {
+              console.log('\n' + diff);
+            } else {
+              console.log(formatClaudeToolResult(output, isError));
+            }
+          },
         },
-        onReasoning: (reasoning) => {
-          const now = Date.now();
-          if (!hasOutput && now - lastReasonUpdate > 300) {
-            lastReasonUpdate = now;
-            spinner.update(`Thinking (${reasoning.slice(-30).trim()})...`);
-          }
-        },
-        onToolStart: (name, args) => {
-          if (hasOutput) {
-            console.log();
-            hasOutput = false;
-          }
-          spinner.stop();
-          console.log(`\n${formatClaudeToolCall(name, args)}`);
-          spinner.start(`Executing ${name}...`);
-        },
-        onToolEnd: (name, output, isError) => {
-          spinner.stop();
-          console.log(formatClaudeToolResult(output, isError));
-        },
-      });
+        activeAbortController.signal
+      );
+
+      // Finalize thinking block if it hadn't triggered yet (e.g. model gave reasoning with no tokens/tools)
+      renderThinkingIfNeeded();
+
+      // Estimate tokens
+      totalTokensEstimate += Math.round((trimmed.length + accumulatedResponse.length + accumulatedReasoning.length) / 4);
+
+      if (hasStartedTokenStream) {
+        streamHighlighter.flush();
+        console.log('\n');
+      } else {
+        spinner.stop();
+      }
     } catch (err: any) {
       spinner.stop();
-      console.error(`\n${b.red('Error:')} ${err.message}`);
+      if (!activeAbortController.signal.aborted) {
+        console.log(renderErrorCard('Relay Gateway / Inference Error', err.message));
+      }
+    } finally {
+      activeAbortController = null;
     }
-
-    if (hasOutput) {
-      console.log();
-    } else {
-      spinner.stop();
-    }
-
-    console.log();
-    rl.setPrompt(getPromptString());
-    rl.prompt();
-  });
-
-  rl.on('close', () => {
-    console.log(`\n${b.melt('🧈 Au revoir!')}\n`);
-    process.exit(0);
-  });
+  }
 }
