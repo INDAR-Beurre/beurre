@@ -145,4 +145,32 @@ describe('BeurreEditor Engine', () => {
     const rightKey = handleKeyStroke(state, '\x1b[C');
     expect(rightKey.state.buffer.startsWith('/mod')).toBe(true);
   });
+
+  it('should trigger effort_cycle on Shift+Tab keys', () => {
+    const state = createInitialEditorState('', 0);
+    const backtab = handleKeyStroke(state, '\x1b[Z');
+    expect(backtab.action).toBe('effort_cycle');
+
+    const kittyBacktab = handleKeyStroke(state, '\x1b[9;2u');
+    expect(kittyBacktab.action).toBe('effort_cycle');
+
+    const xtermBacktab = handleKeyStroke(state, '\x1b[27;2;9~');
+    expect(xtermBacktab.action).toBe('effort_cycle');
+  });
+
+  it('should navigate autocomplete items with Up/Down arrows and complete with Space or Tab', () => {
+    let state = createInitialEditorState('/m', 0);
+    expect(state.autocompleteMatches.length).toBeGreaterThan(1);
+    expect(state.selectedAutocompleteIdx).toBe(0);
+
+    // Down arrow moves selection
+    const downRes = handleKeyStroke(state, '\x1b[B');
+    expect(downRes.state.selectedAutocompleteIdx).toBe(1);
+
+    const secondMatch = state.autocompleteMatches[1];
+
+    // Space key auto-completes the selected match
+    const spaceRes = handleKeyStroke(downRes.state, ' ');
+    expect(spaceRes.state.buffer).toBe(secondMatch.command + ' ');
+  });
 });

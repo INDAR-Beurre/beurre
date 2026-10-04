@@ -12,8 +12,11 @@ describe('Predictive Slash Command Engine', () => {
 
   it('should match commands starting with /l', () => {
     const matches = getPredictiveMatches('/l');
-    expect(matches.length).toBe(1);
-    expect(matches[0].command).toBe('/loop');
+    expect(matches.length).toBe(3);
+    const cmds = matches.map((m) => m.command);
+    expect(cmds).toContain('/loop');
+    expect(cmds).toContain('/login');
+    expect(cmds).toContain('/logout');
   });
 
   it('should match commands starting with /t for /think', () => {
@@ -30,7 +33,7 @@ describe('Predictive Slash Command Engine', () => {
     const matches = getPredictiveMatches('/m');
     const formatted = formatPredictiveHints(matches);
     expect(formatted).toContain('/menu');
-    expect(formatted).toContain('Suggested Commands');
-    expect(formatted.toLowerCase()).toContain('interactive dashboard');
+    expect(formatted).toContain('Commands Palette');
+    expect(formatted.toLowerCase()).toContain('interactive command palette');
   });
 });

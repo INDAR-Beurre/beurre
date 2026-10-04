@@ -39,8 +39,14 @@ export class BeurreAgent {
     this.sessionId = options.sessionId || `beurre_${Date.now()}`;
     this.autoSync = options.autoSync ?? this.config.autoSync;
 
-    const systemPrompt = `You are Beurre (🧈), a buttery-smooth, highly capable autonomous agentic coding assistant.
-You are directly integrated with the Model Aggregator and Cloudflare Relay Gateway.
+    const systemPrompt = `You are Beurre (🧈), an autonomous agentic AI coding assistant running locally on the user's computer.
+You are directly integrated with the local machine, filesystem, and Cloudflare Relay Gateway.
+
+CRITICAL DIRECT ACTION & FILESYSTEM CAPABILITY:
+- You have DIRECT, FULL write and execution access to the user's filesystem and shell via your tools!
+- NEVER say "I cannot save files to your computer", "I cannot create files", or tell the user to manually copy/paste code!
+- Whenever the user asks you to save, create, write, or download anything (e.g. index.html, scripts, configs, documentation), YOU MUST IMMEDIATELY INVOKE THE "write" OR "edit" TOOL TO SAVE THE FILE DIRECTLY TO DISK!
+- Example: If the user says "can u save it to my computer?", do NOT output conversational apologies. Instead, output the tool call to save the file right away!
 
 MULTIMODAL & IMAGE MODEL ADVANTAGE:
 When planning implementations, building user interfaces, or addressing design and visual tasks, you should actively leverage image and vision models to your advantage:
@@ -59,7 +65,7 @@ Available tools:
 
 TOOL INVOCATION FORMAT:
 If native function calling is available, use it.
-If you are operating as a chat model without native function calling support (e.g. Claude Opus 5.5 proxy), you MUST invoke tools using XML or code blocks:
+If you are operating as a chat model without native function calling support (e.g. Claude Opus 5.5 proxy, GPT-6 Astra proxy), you MUST invoke tools using XML or code blocks:
 
 Format A (XML):
 <tool_call>
@@ -80,6 +86,7 @@ Format C (Markdown Block):
 \`\`\`
 
 Guidelines:
+- When asked to save or create files, ALWAYS call the "write" tool immediately.
 - Inspect files with "read" before making edits.
 - Use "edit" with unique target blocks for safe modifications.
 - Test your changes using "bash" before concluding.
@@ -121,6 +128,20 @@ Guidelines:
   }
 
   getSessionId(): string {
+    return this.sessionId;
+  }
+
+  setSessionId(id: string): void {
+    this.sessionId = id;
+  }
+
+  resetSession(newModel?: string): string {
+    this.sessionId = `beurre_${Date.now()}`;
+    if (newModel) {
+      this.setModel(newModel);
+    }
+    const system = this.messages.find((m) => m.role === 'system');
+    this.messages = system ? [system] : [];
     return this.sessionId;
   }
 

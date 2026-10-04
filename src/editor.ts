@@ -9,8 +9,12 @@ export interface EditorPromptOptions {
   cwd?: string;
   turns?: number;
   tokens?: number;
+  effort?: string;
+  quotaText?: string;
+  user?: string;
   history?: string[];
   initialValue?: string;
+  onCycleEffort?: (newEffort: string) => void;
   onAbort?: () => void;
   signal?: AbortSignal;
 }
@@ -107,7 +111,7 @@ export function createInitialEditorState(initialValue = '', historyLength = 0): 
 
 export interface KeyResult {
   state: EditorState;
-  action: 'none' | 'submit' | 'abort' | 'exit';
+  action: 'none' | 'submit' | 'abort' | 'exit' | 'effort_cycle';
   submittedValue?: string;
 }
 
@@ -165,6 +169,11 @@ export function handleKeyStroke(
     }
   }
 
+  // Shift+Tab effort slider (\x1b[Z backtab, \x1b[27;2;9~, \x1b[9;2u)
+  if (keyStr === '\x1b[Z' || keyStr === '\x1b[27;2;9~' || keyStr === '\x1b[9;2u') {
+    return { state: s, action: 'effort_cycle' };
+  }
+
   // Ctrl+C
   if (keyStr === '\x03') {
     if (s.autocompleteMatches.length > 0) {
@@ -213,23 +222,40 @@ export function handleKeyStroke(
       return { state: s, action: 'none' };
     }
 
-    // If autocomplete is visible, complete command instead of submitting
+    // If autocomplete is visible, complete command or submit directly
     if (s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
       const selected = s.autocompleteMatches[s.selectedAutocompleteIdx];
       if (selected) {
-        s.buffer = selected.command + (selected.argsHint ? ' ' : '');
-        s.cursor = s.buffer.length;
-        s.autocompleteMatches = [];
-        return { state: s, action: 'none' };
+        if (!selected.argsHint || s.buffer === selected.command) {
+          s.buffer = selected.command;
+          s.autocompleteMatches = [];
+          return { state: s, action: 'submit', submittedValue: selected.command };
+        } else {
+          s.buffer = selected.command + ' ';
+          s.cursor = s.buffer.length;
+          s.autocompleteMatches = [];
+          return { state: s, action: 'none' };
+        }
       }
     }
 
     return { state: s, action: 'submit', submittedValue: s.buffer };
   }
 
+  // Space key: If user typed slash command prefix, auto-correct to the selected match!
+  if (keyStr === ' ' && s.buffer.startsWith('/') && s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
+    const selected = s.autocompleteMatches[s.selectedAutocompleteIdx];
+    if (selected) {
+      s.buffer = selected.command + ' ';
+      s.cursor = s.buffer.length;
+      s.autocompleteMatches = [];
+      return { state: s, action: 'none' };
+    }
+  }
+
   // Tab
   if (keyStr === '\t') {
-    if (s.autocompleteMatches.length > 0) {
+    if (s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
       const selected = s.autocompleteMatches[s.selectedAutocompleteIdx];
       if (selected) {
         s.buffer = selected.command + (selected.argsHint ? ' ' : '');
@@ -273,7 +299,6 @@ export function handleKeyStroke(
 
     const coords = getBuffer2DCoords(s.buffer, s.cursor);
     if (coords.lineIdx > 0) {
-      // Move up within multi-line buffer
       s.cursor = getCursorFrom2DCoords(coords.lines, coords.lineIdx - 1, coords.colIdx);
       return { state: s, action: 'none' };
     }
@@ -305,7 +330,6 @@ export function handleKeyStroke(
 
     const coords = getBuffer2DCoords(s.buffer, s.cursor);
     if (coords.lineIdx < coords.lines.length - 1) {
-      // Move down within multi-line buffer
       s.cursor = getCursorFrom2DCoords(coords.lines, coords.lineIdx + 1, coords.colIdx);
       return { state: s, action: 'none' };
     }
@@ -341,10 +365,9 @@ export function handleKeyStroke(
     if (s.cursor < s.buffer.length) {
       s.cursor++;
     } else if (s.autocompleteMatches.length > 0) {
-      // Accept ghost completion on right arrow
-      const topMatch = s.autocompleteMatches[s.selectedAutocompleteIdx]?.command ?? '';
-      if (topMatch.startsWith(s.buffer)) {
-        s.buffer = topMatch;
+      const selected = s.autocompleteMatches[s.selectedAutocompleteIdx];
+      if (selected && selected.command.startsWith(s.buffer)) {
+        s.buffer = selected.command + (selected.argsHint ? ' ' : '');
         s.cursor = s.buffer.length;
         s.autocompleteMatches = [];
       }
@@ -356,7 +379,7 @@ export function handleKeyStroke(
   if (keyStr === '\x1b[H' || keyStr === '\x1b[1~' || keyStr === '\x01') {
     const coords = getBuffer2DCoords(s.buffer, s.cursor);
     if (coords.colIdx === 0) {
-      s.cursor = 0; // jump to start of entire buffer
+      s.cursor = 0;
     } else {
       s.cursor = getCursorFrom2DCoords(coords.lines, coords.lineIdx, 0);
     }
@@ -368,30 +391,30 @@ export function handleKeyStroke(
     const coords = getBuffer2DCoords(s.buffer, s.cursor);
     const lineLen = coords.lines[coords.lineIdx]?.length ?? 0;
     if (coords.colIdx === lineLen) {
-      s.cursor = s.buffer.length; // jump to end of entire buffer
+      s.cursor = s.buffer.length;
     } else {
       s.cursor = getCursorFrom2DCoords(coords.lines, coords.lineIdx, lineLen);
     }
     return { state: s, action: 'none' };
   }
 
-  // Word jumps: Alt+Left (\x1b[1;3D, \x1b[1;5D, \x1bb, \x1bB)
-  if (keyStr === '\x1b[1;3D' || keyStr === '\x1b[1;5D' || keyStr === '\x1bb' || keyStr === '\x1bB') {
+  // Word left: Alt+Left (\x1b[1;3D, \x1b[1;5D, \x1bb)
+  if (keyStr === '\x1b[1;3D' || keyStr === '\x1b[1;5D' || keyStr === '\x1bb') {
     s.cursor = findWordBoundaryLeft(s.buffer, s.cursor);
     return { state: s, action: 'none' };
   }
 
-  // Word jumps: Alt+Right (\x1b[1;3C, \x1b[1;5C, \x1bf, \x1bF)
-  if (keyStr === '\x1b[1;3C' || keyStr === '\x1b[1;5C' || keyStr === '\x1bf' || keyStr === '\x1bF') {
+  // Word right: Alt+Right (\x1b[1;3C, \x1b[1;5C, \x1bf)
+  if (keyStr === '\x1b[1;3C' || keyStr === '\x1b[1;5C' || keyStr === '\x1bf') {
     s.cursor = findWordBoundaryRight(s.buffer, s.cursor);
     return { state: s, action: 'none' };
   }
 
-  // Word deletion: Alt+Backspace / Ctrl+W (\x17, \x1b\x7f, \x1b\x08)
-  if (keyStr === '\x17' || keyStr === '\x1b\x7f' || keyStr === '\x1b\x08') {
-    const targetIdx = findWordBoundaryLeft(s.buffer, s.cursor);
-    s.buffer = s.buffer.slice(0, targetIdx) + s.buffer.slice(s.cursor);
-    s.cursor = targetIdx;
+  // Alt+Backspace / Ctrl+W (\x17 or \x1b\x7f) - delete previous word
+  if (keyStr === '\x17' || keyStr === '\x1b\x7f') {
+    const newCursor = findWordBoundaryLeft(s.buffer, s.cursor);
+    s.buffer = s.buffer.slice(0, newCursor) + s.buffer.slice(s.cursor);
+    s.cursor = newCursor;
     if (s.buffer.startsWith('/')) {
       s.autocompleteMatches = getPredictiveMatches(s.buffer);
     } else {
@@ -455,7 +478,7 @@ export function handleKeyStroke(
     return { state: s, action: 'none' };
   }
 
-  // Multi-character raw paste (e.g. pasted snippet with newlines)
+  // Multi-character raw paste
   if (!keyStr.startsWith('\x1b') && (keyStr.includes('\n') || keyStr.includes('\r'))) {
     const normalized = keyStr.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     s.buffer = s.buffer.slice(0, s.cursor) + normalized + s.buffer.slice(s.cursor);
@@ -510,6 +533,7 @@ export class BeurreEditor {
 
     return new Promise<string>((resolve) => {
       let state = createInitialEditorState(options.initialValue ?? '', this.history.length);
+      let currentEffort = options.effort || 'high';
       let lastRenderedLinesCount = 0;
       let lastCursorRow = 0;
 
@@ -524,7 +548,6 @@ export class BeurreEditor {
       stdout.write('\x1b[?2004h');
 
       const cleanup = () => {
-        // Disable bracketed paste mode
         stdout.write('\x1b[?2004l');
         stdin.removeListener('data', onData);
         if (!wasRaw) {
@@ -552,17 +575,15 @@ export class BeurreEditor {
       };
 
       const render = () => {
-        const cols = Math.min(stdout.columns || 80, 80);
+        const cols = Math.min(stdout.columns || 80, 100);
         const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
-        // Clear previous render cleanly
         clearBox();
 
         const lines = state.buffer.split('\n');
         const coords = getBuffer2DCoords(state.buffer, state.cursor);
         const isMultiLine = lines.length > 1;
 
-        // Format a bordered line bounded strictly to terminal cols
         const formatBoxLine = (content: string, borderColor = colors.mutedBox): string => {
           const maxInner = Math.max(10, cols - 4);
           const visualLen = stripAnsi(content).length;
@@ -588,7 +609,7 @@ export class BeurreEditor {
           return `${borderColor}│${colors.reset} ${text}${' '.repeat(pad)} ${borderColor}│${colors.reset}`;
         };
 
-        // Calculate ghost completion text on line 0 if slash command matching
+        // Ghost text for completion on line 0
         let ghostText = '';
         if (state.buffer.startsWith('/') && state.autocompleteMatches.length > 0 && coords.lineIdx === 0) {
           const topMatch = state.autocompleteMatches[state.selectedAutocompleteIdx]?.command ?? '';
@@ -602,7 +623,6 @@ export class BeurreEditor {
         let targetCol = 1;
 
         if (isMultiLine) {
-          // Dedicated clean multi-line editor card
           const maxLineNumDigits = lines.length.toString().length;
           const headerTitle = ` Multi-line Prompt (Shift+Enter newline • Enter send) `;
           const topFill = Math.max(0, cols - headerTitle.length - 3);
@@ -622,31 +642,66 @@ export class BeurreEditor {
           targetRow = 1 + coords.lineIdx;
           targetCol = 2 + maxLineNumDigits + 3 + 2 + coords.colIdx;
         } else {
-          // Minimalist Claude Code prompt line: ❯ prompt
-          const promptPrefix = `${colors.butterGold}${colors.bold}❯${colors.reset} `;
-          const isBufferEmpty = state.buffer === '';
+          // OMP / Claude Code Prompt Bar with top line, input line, divider, and bottom status bar
+          drawnLines.push(`${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`);
 
+          const promptPrefix = `${colors.butterGold}${colors.bold}>${colors.reset} `;
+          const isBufferEmpty = state.buffer === '';
           if (isBufferEmpty) {
-            const placeholder = `${colors.darkGray}Type a prompt or / for commands (Shift+Enter for newline)${colors.reset}`;
+            const placeholder = `${colors.darkGray}Type a prompt or / for commands (Shift+Enter newline)${colors.reset}`;
             drawnLines.push(`${promptPrefix}${placeholder}`);
           } else {
             const ghost = `${colors.dim}${ghostText}${colors.reset}`;
             drawnLines.push(`${promptPrefix}${colors.bold}${colors.white}${state.buffer}${colors.reset}${ghost}`);
           }
 
-          targetRow = 0;
+          drawnLines.push(`${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`);
+
+          // Bottom status line
+          const leftStatus = `${colors.dim}esc to cancel  •  tab complete  •  shift+tab effort${colors.reset}`;
+          const modelName = options.model ? getModelDisplayName(options.model) : 'Beurre';
+          const effortTag = currentEffort.toLowerCase();
+          const quotaTag = options.quotaText ? `${colors.cyan}${options.quotaText}${colors.reset}` : '';
+          const userTag = options.user ? `${colors.butterCream}${options.user}${colors.reset}` : '';
+
+          const rightParts = [userTag, modelName, effortTag, quotaTag].filter(Boolean);
+          const rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+
+          const leftLen = stripAnsi(leftStatus).length;
+          const rightLen = stripAnsi(rightStatus).length;
+          const padStatus = Math.max(2, cols - leftLen - rightLen);
+          drawnLines.push(`${leftStatus}${' '.repeat(padStatus)}${rightStatus}`);
+
+          targetRow = 1;
           targetCol = 3 + coords.colIdx;
 
-          // If slash command autocompletions exist, draw floating dropdown below prompt
+          // Autocomplete floating box with smooth scrolling
           if (state.autocompleteMatches.length > 0) {
-            const maxDisplay = 5;
-            const visibleMatches = state.autocompleteMatches.slice(0, maxDisplay);
-            const popupHeader = `╭─ Commands (Tab complete, ↑/↓ select, Esc dismiss) `;
+            const maxDisplay = 8;
+            const totalMatches = state.autocompleteMatches.length;
+
+            let scrollOffset = 0;
+            if (state.selectedAutocompleteIdx >= maxDisplay) {
+              scrollOffset = state.selectedAutocompleteIdx - maxDisplay + 1;
+            }
+            if (scrollOffset > totalMatches - maxDisplay) {
+              scrollOffset = Math.max(0, totalMatches - maxDisplay);
+            }
+
+            const visibleMatches = state.autocompleteMatches.slice(scrollOffset, scrollOffset + maxDisplay);
+            const countTag = `[${state.selectedAutocompleteIdx + 1}/${totalMatches}]`;
+            const popupHeader = `╭─ Commands ${countTag} (Tab/Space complete, ↑/↓ scroll, Shift+Tab effort) `;
             const fillLen = Math.max(0, cols - popupHeader.length - 1);
             drawnLines.push(`${colors.mutedBox}${popupHeader}${'─'.repeat(fillLen)}╮${colors.reset}`);
 
+            if (scrollOffset > 0) {
+              const moreAbove = `    ${colors.dim}▲ ${scrollOffset} more commands above (use ↑ to scroll)...${colors.reset}`;
+              drawnLines.push(formatBoxLine(moreAbove, colors.mutedBox));
+            }
+
             visibleMatches.forEach((m, idx) => {
-              const isSelected = idx === state.selectedAutocompleteIdx;
+              const actualIdx = scrollOffset + idx;
+              const isSelected = actualIdx === state.selectedAutocompleteIdx;
               const pointer = isSelected ? `${colors.butterGold}❯${colors.reset}` : ' ';
               const hint = m.argsHint ? ` ${colors.dim}${m.argsHint}${colors.reset}` : '';
               const cmdText = isSelected
@@ -655,14 +710,14 @@ export class BeurreEditor {
 
               const descText = `${colors.gray}• ${m.description}${colors.reset}`;
               const visibleCmdLen = stripAnsi(cmdText).length;
-              const padCmd = Math.max(1, 24 - visibleCmdLen);
+              const padCmd = Math.max(1, 26 - visibleCmdLen);
               const lineContent = `  ${pointer} ${cmdText}${' '.repeat(padCmd)} ${descText}`;
               drawnLines.push(formatBoxLine(lineContent, colors.mutedBox));
             });
 
-            if (state.autocompleteMatches.length > maxDisplay) {
-              const remaining = state.autocompleteMatches.length - maxDisplay;
-              const moreLine = `    ${colors.dim}... and ${remaining} more commands${colors.reset}`;
+            if (scrollOffset + maxDisplay < totalMatches) {
+              const remaining = totalMatches - (scrollOffset + maxDisplay);
+              const moreLine = `    ${colors.dim}▼ ${remaining} more commands below (use ↓ to scroll)...${colors.reset}`;
               drawnLines.push(formatBoxLine(moreLine, colors.mutedBox));
             }
             drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}`);
@@ -688,6 +743,15 @@ export class BeurreEditor {
         const str = chunk.toString('utf-8');
         const res = handleKeyStroke(state, str, this.history);
         state = res.state;
+
+        if (res.action === 'effort_cycle') {
+          const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
+          const curIdx = efforts.indexOf(currentEffort.toLowerCase());
+          currentEffort = efforts[(curIdx + 1) % efforts.length];
+          options.onCycleEffort?.(currentEffort);
+          render();
+          return;
+        }
 
         if (res.action === 'submit') {
           cleanup();

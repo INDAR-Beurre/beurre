@@ -1,3 +1,4 @@
+import readline from 'node:readline';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
@@ -24,6 +25,17 @@ import {
   renderToast,
 } from './theme.ts';
 import { SLASH_COMMANDS, getPredictiveMatches, formatPredictiveHints } from './predictive.ts';
+import {
+  fetchWhoami,
+  fetchTokenUsage,
+  formatTokenProgressBar,
+  saveCloudSession,
+  listCloudSessions,
+  resumeCloudSession,
+  loginToRelay,
+  logoutFromRelay,
+  type AuthUser,
+} from './auth.ts';
 
 export function copyToClipboard(text: string): boolean {
   try {
@@ -68,6 +80,20 @@ export async function startRepl(initialModel?: string): Promise<void> {
   let lastReasoning = '';
   let lastAssistantResponse = '';
 
+  // Load active authenticated user & token quota
+  let currentUser: AuthUser = await fetchWhoami();
+  let dailyTokensUsed = 0;
+  try {
+    const usage = await fetchTokenUsage();
+    dailyTokensUsed = usage.dailyTokensUsed;
+  } catch {}
+
+  const formatTokens = (num: number): string => {
+    if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M';
+    if (num >= 1_000) return (num / 1_000).toFixed(0) + 'k';
+    return num.toString();
+  };
+
   // Graceful interrupt handling for active turns
   const onSigInt = () => {
     if (activeAbortController) {
@@ -81,6 +107,10 @@ export async function startRepl(initialModel?: string): Promise<void> {
     const messages = agent.getMessages();
     const turnsCount = messages.filter((m) => m.role === 'user' || m.role === 'assistant').length;
 
+    const quotaText = currentUser.role === 'admin'
+      ? '∞'
+      : `${formatTokens(dailyTokensUsed)} / 50M`;
+
     let rawInput = '';
     try {
       rawInput = await editor.readPrompt({
@@ -88,6 +118,12 @@ export async function startRepl(initialModel?: string): Promise<void> {
         cwd: agent.getCwd(),
         turns: turnsCount,
         tokens: totalTokensEstimate,
+        effort: agent.getEffort(),
+        quotaText,
+        user: currentUser.name,
+        onCycleEffort: (newEffort) => {
+          agent.setEffort(newEffort);
+        },
       });
     } catch {
       break;
@@ -109,6 +145,162 @@ export async function startRepl(initialModel?: string): Promise<void> {
       }
 
       switch (cmd.toLowerCase()) {
+        case '/new': {
+          const newId = agent.resetSession(rest || undefined);
+          totalTokensEstimate = 0;
+          lastReasoning = '';
+          lastAssistantResponse = '';
+          console.clear();
+          console.log(banner('1.0.0', agent.getModel(), agent.getCwd(), agent.getEffort()));
+          console.log(`\n${renderToast(`Started new session: ${newId} (bound to ${getModelDisplayName(agent.getModel())})`, true)}\n`);
+          saveCloudSession({
+            id: agent.getSessionId(),
+            title: 'New Session',
+            model: agent.getModel(),
+            history: agent.getMessages(),
+          }).catch(() => {});
+          break;
+        }
+
+        case '/sessions': {
+          const spinner = new ButterSpinner();
+          spinner.start('Fetching cloud sessions from Supabase...');
+          try {
+            const sessions = await listCloudSessions();
+            spinner.stop();
+            if (sessions.length === 0) {
+              console.log(`\n${renderToast('No saved cloud sessions found in Supabase.', true)}\n`);
+            } else {
+              console.log(`\n${colors.bold}${colors.butterGold}☁️  SUPABASE CLOUD SESSIONS${colors.reset} (${sessions.length} sessions across devices):\n`);
+              for (const s of sessions.slice(0, 15)) {
+                const isActive = s.id === agent.getSessionId();
+                const activeBadge = isActive ? ` ${colors.bold}${colors.green}[ACTIVE]${colors.reset}` : '';
+                const dateStr = new Date(s.at).toLocaleString();
+                const dispModel = getModelDisplayName(s.model);
+                console.log(`  ${colors.butterGold}●${colors.reset} ${colors.bold}${s.id}${colors.reset}${activeBadge}`);
+                console.log(`    ${colors.butterCream}${s.title}${colors.reset}`);
+                console.log(`    ${colors.dim}Model: ${dispModel} (${s.model}) • Turns: ${s.history?.length || 0} • Last active: ${dateStr}${colors.reset}`);
+                console.log(`    ${colors.dim}Resume: /resume ${s.id}${colors.reset}\n`);
+              }
+            }
+          } catch (err: any) {
+            spinner.stop();
+            console.log(renderErrorCard('Cloud Sessions Error', err.message));
+          }
+          break;
+        }
+
+        case '/resume': {
+          if (!rest) {
+            console.log(`\n${b.red('Usage:')} /resume <session_id>\n${colors.dim}Tip: Run /sessions to view your available cloud sessions.${colors.reset}\n`);
+          } else {
+            const spinner = new ButterSpinner();
+            spinner.start(`Resuming session ${rest} from Supabase...`);
+            const result = await resumeCloudSession(rest);
+            spinner.stop();
+            if (result.error || !result.session) {
+              console.log(`\n${renderErrorCard('Resume Failed', result.error || 'Session not found')}\n`);
+            } else {
+              const sess = result.session;
+              agent.setSessionId(sess.id);
+              if (sess.model) {
+                agent.setModel(sess.model);
+              }
+              const systemMsg = agent.getMessages().find((m) => m.role === 'system');
+              const restoredHistory = sess.history && sess.history.length > 0 ? sess.history : [];
+              const finalMessages = systemMsg
+                ? [systemMsg, ...restoredHistory.filter((m: any) => m.role !== 'system')]
+                : restoredHistory;
+              agent.setMessages(finalMessages as any);
+              totalTokensEstimate = Math.round(
+                finalMessages.reduce((acc: number, m: any) => acc + (m.content?.length || 0), 0) / 4
+              );
+              console.log(`\n${renderToast(`Resumed cloud session "${sess.title}" (${sess.id}) bound to ${getModelDisplayName(agent.getModel())}`, true)}\n`);
+            }
+          }
+          break;
+        }
+
+        case '/whoami': {
+          const spinner = new ButterSpinner();
+          spinner.start('Fetching active account details...');
+          try {
+            const user = await fetchWhoami();
+            currentUser = user;
+            const usage = await fetchTokenUsage();
+            dailyTokensUsed = usage.dailyTokensUsed;
+            spinner.stop();
+            console.log(`\n${colors.butterGold}╭── 👤 Active Account Profile ───────────────────────────────────╮${colors.reset}`);
+            console.log(`  ${b.bold('Account:')}       ${b.cream(user.name)}`);
+            console.log(`  ${b.bold('Role Tier:')}     ${user.role === 'admin' ? b.gold('ADMIN (Unlimited)') : b.cream('STANDARD (50M Daily Limit)')}`);
+            console.log(`  ${b.bold('Storage:')}       ${b.green('Supabase Postgres (relay_chats)')}`);
+            console.log(`  ${b.bold('Daily Tokens:')}  ${usage.isUnlimited ? '∞ Unlimited' : `${usage.dailyTokensUsed.toLocaleString()} / 50,000,000`}`);
+            console.log(`  ${b.bold('Quota Bar:')}     ${formatTokenProgressBar(usage.dailyTokensUsed, usage.dailyLimit)}`);
+            console.log(`${colors.butterGold}╰────────────────────────────────────────────────────────────────╯${colors.reset}\n`);
+          } catch (err: any) {
+            spinner.stop();
+            console.log(renderErrorCard('Account Error', err.message));
+          }
+          break;
+        }
+
+        case '/quota': {
+          const spinner = new ButterSpinner();
+          spinner.start('Checking daily token quota against 50M limit...');
+          try {
+            const usage = await fetchTokenUsage();
+            dailyTokensUsed = usage.dailyTokensUsed;
+            spinner.stop();
+            console.log(`\n${colors.butterGold}╭── 📊 Daily Token Quota (50M Limit) ────────────────────────────╮${colors.reset}`);
+            console.log(`  ${b.bold('Account:')}       ${b.cream(usage.account)} (${usage.role.toUpperCase()})`);
+            console.log(`  ${b.bold('Today Used:')}    ${b.gold(usage.dailyTokensUsed.toLocaleString())} tokens`);
+            console.log(`  ${b.bold('Daily Limit:')}   ${usage.isUnlimited ? b.green('∞ Unlimited (Admin Tier)') : b.cream('50,000,000 tokens')}`);
+            if (!usage.isUnlimited) {
+              console.log(`  ${b.bold('Remaining:')}    ${b.green((usage.remainingTokens || 0).toLocaleString())} tokens`);
+            }
+            console.log(`  ${b.bold('Progress:')}     ${formatTokenProgressBar(usage.dailyTokensUsed, usage.dailyLimit)}`);
+            console.log(`  ${b.bold('Weekly Used:')}   ${usage.weeklyTokensUsed.toLocaleString()} tokens`);
+            console.log(`  ${b.bold('All-Time:')}      ${usage.allTimeTokensUsed.toLocaleString()} tokens`);
+            console.log(`${colors.butterGold}╰────────────────────────────────────────────────────────────────╯${colors.reset}\n`);
+          } catch (err: any) {
+            spinner.stop();
+            console.log(renderErrorCard('Quota Error', err.message));
+          }
+          break;
+        }
+
+        case '/login': {
+          let [username, password] = rest.split(' ');
+          if (!username || !password) {
+            console.log(`\n${b.gold('Sign in to Relay / Supabase account:')}`);
+            const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+            username = await new Promise<string>((res) => rl.question(`  ${b.bold('Username:')} `, (ans) => res(ans.trim())));
+            password = await new Promise<string>((res) => rl.question(`  ${b.bold('Password:')} `, (ans) => { rl.close(); res(ans.trim()); }));
+          }
+          if (!username || !password) {
+            console.log(`\n${b.red('Login aborted: username and password required.')}\n`);
+            break;
+          }
+          const spinner = new ButterSpinner();
+          spinner.start(`Logging in as ${username}...`);
+          const result = await loginToRelay(username, password);
+          spinner.stop();
+          if (result.ok && result.user) {
+            currentUser = result.user;
+            console.log(`\n${renderToast(`Logged in successfully as ${result.user.name} (${result.user.role})!`, true)}\n`);
+          } else {
+            console.log(`\n${renderErrorCard('Login Failed', result.error || 'Invalid credentials')}\n`);
+          }
+          break;
+        }
+
+        case '/logout': {
+          await logoutFromRelay();
+          currentUser = { name: 'anonymous', role: 'user' };
+          console.log(`\n${renderToast('Logged out. Cleared local credentials.', true)}\n`);
+          break;
+        }
+
         case '/menu': {
           await showMenu(agent, undefined, {
             thinkingMode,
@@ -394,6 +586,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
         case '/clear': {
           console.clear();
           console.log(banner('1.0.0', agent.getModel(), agent.getCwd(), agent.getEffort()));
+          console.log(`\n  ${colors.dim}Screen buffer cleared. Active session preserved (${messages.length} messages in memory). Use /new to start a fresh session.${colors.reset}\n`);
           break;
         }
 
@@ -503,8 +696,18 @@ export async function startRepl(initialModel?: string): Promise<void> {
       renderThinkingIfNeeded();
 
       // Estimate tokens & save response for /copy
-      totalTokensEstimate += Math.round((trimmed.length + accumulatedResponse.length + accumulatedReasoning.length) / 4);
+      const turnTokens = Math.round((trimmed.length + accumulatedResponse.length + accumulatedReasoning.length) / 4);
+      totalTokensEstimate += turnTokens;
+      dailyTokensUsed += turnTokens;
       lastAssistantResponse = accumulatedResponse;
+
+      // Auto-sync session turns to Supabase cloud store
+      saveCloudSession({
+        id: agent.getSessionId(),
+        title: trimmed.slice(0, 60),
+        model: agent.getModel(),
+        history: agent.getMessages(),
+      }).catch(() => {});
 
       if (hasStartedTokenStream) {
         streamHighlighter.flush();

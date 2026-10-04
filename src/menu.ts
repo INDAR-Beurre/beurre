@@ -222,12 +222,17 @@ export async function showMenu(
   const stdin = process.stdin;
   const stdout = process.stdout;
 
-  // Enter alternate screen buffer & hide cursor so user chat scrollback is NEVER cleared or lost!
-  stdout.write('\x1b[?1049h\x1b[?25l');
+  let lastRenderedLinesCount = 0;
 
-  const cleanupAndExit = () => {
-    // Show cursor & return to primary screen buffer
-    stdout.write('\x1b[?25h\x1b[?1049l');
+  const clearInline = () => {
+    if (lastRenderedLinesCount > 0) {
+      stdout.write(`\x1b[${lastRenderedLinesCount}A\r`);
+      for (let i = 0; i < lastRenderedLinesCount; i++) {
+        stdout.write('\x1b[2K\x1b[1B');
+      }
+      stdout.write(`\x1b[${lastRenderedLinesCount}A\r`);
+      lastRenderedLinesCount = 0;
+    }
   };
 
   const askInCookedMode = (question: string): Promise<string> => {
@@ -242,55 +247,23 @@ export async function showMenu(
     });
   };
 
-  const pressKeyToReturn = async (promptMsg = 'Press any key or Esc to return to menu...'): Promise<void> => {
-    stdout.write(`\n  ${colors.dim}${promptMsg}${colors.reset}\n`);
-    return new Promise((resolve) => {
-      stdin.setRawMode(true);
-      stdin.resume();
-      const onKey = () => {
-        stdin.removeListener('data', onKey);
-        resolve();
-      };
-      stdin.on('data', onKey);
-    });
-  };
+  const renderInlinePalette = () => {
+    clearInline();
 
-  const renderDashboard = () => {
-    // Jump to top of alternate screen
-    stdout.write('\x1b[H\x1b[2J');
-    const cols = Math.min(stdout.columns || 80, 80);
-    const innerWidth = cols - 4;
     const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
-
     const modelName = getModelDisplayName(agent.getModel());
-    const git = getGitStatus(agent.getCwd());
-    const gitTag = git.branch ? ` • ${git.branch}${git.isDirty ? '*' : ''}` : '';
 
-    // Sleek header bar
-    console.log(`\n  ${colors.bold}${colors.butterGold}🧈 BEURRE${colors.reset} ${colors.dim}— Settings & Command Center${colors.reset}`);
-    console.log(`  ${colors.dim}Model:${colors.reset} ${colors.bold}${colors.butterCream}${modelName}${colors.reset}  ${colors.dim}•  Effort:${colors.reset} ${b.gold(agent.getEffort().toUpperCase())}  ${colors.dim}•  Thinking:${colors.reset} ${b.cream(currentThinkingMode.toUpperCase())}${colors.dim}${gitTag}${colors.reset}`);
-    console.log(`  ${colors.mutedBox}${'─'.repeat(cols - 4)}${colors.reset}`);
+    const lines: string[] = [];
+    lines.push(`  ${colors.butterMelt}╭── 🧈 Beurre Command Palette (OMP Mode) ──────────────────────────────╮${colors.reset}`);
+    lines.push(`  ${colors.butterMelt}│${colors.reset}  ${colors.dim}Model:${colors.reset} ${colors.bold}${colors.butterCream}${modelName}${colors.reset}  ${colors.dim}• Effort:${colors.reset} ${b.gold(agent.getEffort().toUpperCase())}  ${colors.dim}• Thinking:${colors.reset} ${b.cream(currentThinkingMode.toUpperCase())}`);
+    lines.push(`  ${colors.butterMelt}├────────────────────────────────────────────────────────────────────────┤${colors.reset}`);
 
     if (bannerToast) {
-      console.log(`  ${bannerToast}`);
+      lines.push(`  ${bannerToast}`);
       bannerToast = '';
-    } else {
-      console.log();
     }
 
-    // Render categorized menu sections
-    let lastCat = '';
     MENU_ITEMS.forEach((item, idx) => {
-      // Print category header
-      if (item.category !== lastCat) {
-        lastCat = item.category;
-        let catLabel = '';
-        if (item.category === 'model') catLabel = '⚙️  MODEL & REASONING';
-        else if (item.category === 'agents') catLabel = '🤖  AUTONOMOUS WORKFLOWS';
-        else if (item.category === 'workspace') catLabel = '🛠️  WORKSPACE & REPOSITORY';
-        console.log(`  ${colors.dim}${catLabel}${colors.reset}`);
-      }
-
       const isSelected = idx === selectedIdx;
       const pointer = isSelected ? `${colors.butterGold}❯${colors.reset} ` : '  ';
       const numTag = `[${item.id}]`;
@@ -302,38 +275,31 @@ export async function showMenu(
         : `${colors.white}${leftLabel}${colors.reset}`;
 
       const visibleLeftLen = stripAnsi(leftLabel).length;
-      const padLen = Math.max(2, 30 - visibleLeftLen);
+      const padLen = Math.max(2, 28 - visibleLeftLen);
 
       const rightFormatted = isSelected
         ? `${colors.bold}${colors.butterCream}${value}${colors.reset}  ${colors.dim}${item.actionHint}${colors.reset}`
         : `${colors.gray}${value}${colors.reset}`;
 
-      console.log(`  ${pointer}${leftFormatted}${' '.repeat(padLen)}${rightFormatted}`);
+      lines.push(`  ${pointer}${leftFormatted}${' '.repeat(padLen)}${rightFormatted}`);
     });
 
-    // Detail card for active item
     const activeItem = MENU_ITEMS[selectedIdx];
-    console.log(`\n  ${colors.mutedBox}${'─'.repeat(cols - 4)}${colors.reset}`);
+    lines.push(`  ${colors.butterMelt}├────────────────────────────────────────────────────────────────────────┤${colors.reset}`);
+    lines.push(`  ${colors.butterMelt}│${colors.reset}  ${colors.butterCream}${activeItem.description}${colors.reset}`);
+    lines.push(`  ${colors.butterMelt}╰────────────────────────────────────────────────────────────────────────╯${colors.reset}`);
+    lines.push(`  ${colors.dim}[↑/↓] Move   [Space] Cycle   [Enter] Select   [Esc] Close${colors.reset}`);
 
-    const formatDetailLine = (line: string) => {
-      const vis = stripAnsi(line).length;
-      const pad = Math.max(0, innerWidth - vis);
-      return `  ${colors.mutedBox}│${colors.reset} ${line}${' '.repeat(pad)} ${colors.mutedBox}│${colors.reset}`;
-    };
-
-    console.log(`  ${colors.mutedBox}╭──${colors.bold}${colors.butterGold} ${activeItem.icon} ${activeItem.title.toUpperCase()} ${colors.reset}${colors.mutedBox}${'─'.repeat(Math.max(0, cols - activeItem.title.length - 12))}╮${colors.reset}`);
-    activeItem.details.forEach((det) => {
-      console.log(formatDetailLine(`${colors.butterCream}${det}${colors.reset}`));
-    });
-    console.log(`  ${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}`);
-
-    // Clean keybinding hints
-    console.log(`  ${colors.dim}[↑/↓] Move   [Space] Cycle Value   [Enter] Select/Open   [Esc/q] Close${colors.reset}\n`);
+    stdout.write(lines.join('\n') + '\n');
+    lastRenderedLinesCount = lines.length;
   };
+
+  // Hide cursor during navigation
+  stdout.write('\x1b[?25l');
 
   try {
     while (running) {
-      renderDashboard();
+      renderInlinePalette();
 
       // Read single keypress in raw mode
       const key = await new Promise<string>((resolve) => {
@@ -363,26 +329,22 @@ export async function showMenu(
         break;
       }
 
-      // Quick toggle on Space bar for toggleable settings
+      // Space key: cycle toggleable settings
       if (key === ' ') {
         const active = MENU_ITEMS[selectedIdx];
         if (active.id === '2') {
-          // Cycle reasoning effort
           const efforts = ['max', 'xhigh', 'high', 'medium', 'low'];
           const cur = agent.getEffort().toLowerCase();
           const nextIdx = (efforts.indexOf(cur) + 1) % efforts.length;
           const nextEffort = efforts[nextIdx];
           agent.setEffort(nextEffort);
-          bannerToast = renderToast(`Reasoning effort set to: ${nextEffort.toUpperCase()}`, true);
           continue;
         }
         if (active.id === '3') {
-          // Cycle thinking display
           if (currentThinkingMode === 'expanded') currentThinkingMode = 'collapsed';
           else if (currentThinkingMode === 'collapsed') currentThinkingMode = 'hidden';
           else currentThinkingMode = 'expanded';
           options.onToggleThinking?.(currentThinkingMode);
-          bannerToast = renderToast(`Thinking display switched to: ${currentThinkingMode.toUpperCase()}`, true);
           continue;
         }
       }
@@ -405,97 +367,61 @@ export async function showMenu(
         break;
       }
 
-      // Dispatch action for chosen menu item
+      // Clear palette before executing chosen action so terminal stays clean
+      clearInline();
+      stdout.write('\x1b[?25h'); // restore cursor for action
+
       switch (chosenItem.id) {
         case '1': {
-          // Visual Model Navigator
           await openModelPicker(agent.getModel(), (newModel) => {
             agent.setModel(newModel);
           });
-          bannerToast = renderToast(`Active model switched to: ${getModelDisplayName(agent.getModel())}`, true);
-          break;
+          console.log(`\n${renderToast(`Active model switched to: ${getModelDisplayName(agent.getModel())}`, true)}\n`);
+          return;
         }
 
         case '2': {
-          // Reasoning Effort Selector
           const efforts = ['max', 'xhigh', 'high', 'medium', 'low'];
           const cur = agent.getEffort().toLowerCase();
           const nextIdx = (efforts.indexOf(cur) + 1) % efforts.length;
           const nextEffort = efforts[nextIdx];
           agent.setEffort(nextEffort);
-          bannerToast = renderToast(`Reasoning effort switched to: ${nextEffort.toUpperCase()}`, true);
-          break;
+          console.log(`\n${renderToast(`Reasoning effort set to: ${nextEffort.toUpperCase()}`, true)}\n`);
+          return;
         }
 
         case '3': {
-          // Thinking Blocks Display Toggle
           if (currentThinkingMode === 'expanded') currentThinkingMode = 'collapsed';
           else if (currentThinkingMode === 'collapsed') currentThinkingMode = 'hidden';
           else currentThinkingMode = 'expanded';
           options.onToggleThinking?.(currentThinkingMode);
-          bannerToast = renderToast(`Thinking display set to: ${currentThinkingMode.toUpperCase()}`, true);
-          break;
+          console.log(`\n${renderToast(`Thinking block display set to: ${currentThinkingMode.toUpperCase()}`, true)}\n`);
+          return;
         }
 
         case '4': {
-          // Subagents Squad Browser & Interactive Dispatcher
-          stdout.write('\x1b[H\x1b[2J');
-          console.log(`\n  ${colors.bold}${colors.butterGold}👥 Native Named Subagents Squad${colors.reset} ${colors.dim}(Designated personas & model IDs)${colors.reset}\n`);
+          console.log(`\n${colors.bold}${colors.butterGold}👥 Native Named Subagents Squad${colors.reset} ${colors.dim}(Designated personas & models)${colors.reset}:\n`);
           const subs = listSubagents();
           subs.forEach((s, idx) => {
             console.log(`  ${b.gold(`[${idx + 1}]`)} ${b.subagentBadge(s.name)} ${colors.dim}Model:${colors.reset} ${b.cream(s.modelId)}`);
             console.log(`      Role: ${colors.white}${s.role}${colors.reset}`);
             console.log(`      ${colors.gray}${s.description}${colors.reset}\n`);
           });
-
-          console.log(`  ${colors.dim}Enter subagent number [1-${subs.length}] to dispatch a task, or press Enter to cancel:${colors.reset}`);
-          const subChoice = await askInCookedMode(`  ${b.gold('Select subagent:')} `);
-          const subIdx = parseInt(subChoice, 10);
-          if (!isNaN(subIdx) && subIdx >= 1 && subIdx <= subs.length) {
-            const target = subs[subIdx - 1];
-            const task = await askInCookedMode(`  ${b.gold(`Enter task for ${target.name}:`)} `);
-            if (task) {
-              const spinner = new ButterSpinner();
-              spinner.start(`Dispatching to ${target.name}...`);
-              try {
-                const res = await runNamedSubagent(target.name, task, agent.getCwd());
-                spinner.stop();
-                console.log(`\n  ${b.subagentBadge(res.subagentName)} ${b.dim(`[${res.modelId} • ${res.turns} turns]`)}`);
-                console.log(`  ${colors.white}${res.summary.replace(/\n/g, '\n  ')}${colors.reset}\n`);
-              } catch (err: any) {
-                spinner.stop();
-                console.error(`\n  ${b.red('Subagent error:')} ${err.message}\n`);
-              }
-              await pressKeyToReturn();
-            }
-          }
-          break;
+          return;
         }
 
         case '5': {
-          // Autonomous Prompt Repeating Loop
-          stdout.write('\x1b[H\x1b[2J');
-          console.log(`\n  ${colors.bold}${colors.butterGold}🔁 Autonomous Prompt Repeating Loop${colors.reset}`);
-          console.log(`  ${colors.gray}Repeats a prompt continuously each time the model completes a turn.${colors.reset}`);
-          console.log(`  ${colors.gray}Context is automatically compacted between iterations with the Butter Melt Compactor.${colors.reset}\n`);
-
-          const loopPrompt = await askInCookedMode(`  ${b.gold('Enter recurring prompt (or press Enter to cancel):')} `);
+          const loopPrompt = await askInCookedMode(`  ${b.gold('Enter recurring prompt for loop (or Enter to cancel):')} `);
           if (loopPrompt) {
-            const maxStr = await askInCookedMode(`  ${b.gold('Max iterations (press Enter for continuous indefinite loop):')} `);
+            const maxStr = await askInCookedMode(`  ${b.gold('Max iterations (press Enter for continuous):')} `);
             const maxIterations = maxStr ? parseInt(maxStr, 10) : undefined;
-            // Exit alternate screen before starting loop runner so user sees streaming
-            cleanupAndExit();
             const runner = new BeurreLoopRunner();
             await runner.start(agent, loopPrompt, { maxIterations });
-            return;
           }
-          break;
+          return;
         }
 
         case '6': {
-          // Git Working Tree Diff
-          stdout.write('\x1b[H\x1b[2J');
-          console.log(`\n  ${colors.bold}${colors.butterGold}🔍 Git Working Tree Diff${colors.reset}\n`);
           try {
             const diffOutput = execSync('git diff HEAD 2>/dev/null', {
               cwd: agent.getCwd(),
@@ -504,11 +430,11 @@ export async function showMenu(
             }).trim();
 
             if (!diffOutput) {
-              console.log(`  ${b.green('✔ Clean repository working tree. No uncommitted modifications.')}\n`);
+              console.log(`\n${b.green('✔ Clean repository working tree. No uncommitted modifications.')}\n`);
             } else {
+              console.log(`\n${colors.bold}${colors.butterGold}🧈 Git Working Tree Diff:${colors.reset}\n`);
               const lines = diffOutput.split('\n');
-              const maxDisplay = 40;
-              const displayLines = lines.slice(0, maxDisplay);
+              const displayLines = lines.slice(0, 40);
               const highlighted = displayLines.map((line) => {
                 if (line.startsWith('+++') || line.startsWith('---')) return `  ${colors.dim}${line}${colors.reset}`;
                 if (line.startsWith('+')) return `  ${colors.green}${line}${colors.reset}`;
@@ -517,35 +443,32 @@ export async function showMenu(
                 return `  ${colors.gray}${line}${colors.reset}`;
               }).join('\n');
               console.log(highlighted);
-              if (lines.length > maxDisplay) {
-                console.log(`\n  ${colors.dim}... and ${lines.length - maxDisplay} more diff lines${colors.reset}`);
+              if (lines.length > 40) {
+                console.log(`\n  ${colors.dim}... and ${lines.length - 40} more diff lines${colors.reset}`);
               }
               console.log();
             }
           } catch (err: any) {
-            console.log(`  ${b.red('Error running git diff:')} ${err.message}\n`);
+            console.log(`\n${b.red('Error running git diff:')} ${err.message}\n`);
           }
-          await pressKeyToReturn();
-          break;
+          return;
         }
 
         case '7': {
-          // Compact Context
           const msgs = agent.getMessages();
           if (msgs.length <= 2) {
-            bannerToast = renderToast('Context is already minimal. No compaction needed.', true);
+            console.log(`\n${renderToast('Context is already minimal. No compaction needed.', true)}\n`);
           } else {
             const before = msgs.length;
             const compacted = compactMessages(msgs, { iteration: 1, isLoop: false });
             agent.setMessages(compacted);
             const after = compacted.length;
-            bannerToast = renderToast(`Context compacted: ${before} turns → ${after} turns`, true);
+            console.log(`\n${renderToast(`Context compacted: ${before} turns → ${after} turns`, true)}\n`);
           }
-          break;
+          return;
         }
 
         case '8': {
-          // Export Session
           const defaultPath = path.join(agent.getCwd(), `beurre-session-${new Date().toISOString().slice(0, 10)}.md`);
           const msgs = agent.getMessages();
           const mdLines = [
@@ -565,17 +488,14 @@ export async function showMenu(
           }
           try {
             fs.writeFileSync(defaultPath, mdLines.join('\n'), 'utf-8');
-            bannerToast = renderToast(`Session exported: ${defaultPath}`, true);
+            console.log(`\n${renderToast(`Session exported successfully to: ${defaultPath}`, true)}\n`);
           } catch (err: any) {
-            bannerToast = renderToast(`Export failed: ${err.message}`, false);
+            console.log(`\n${renderToast(`Export failed: ${err.message}`, false)}\n`);
           }
-          break;
+          return;
         }
 
         case '9': {
-          // Session Usage & Metrics
-          stdout.write('\x1b[H\x1b[2J');
-          console.log(`\n  ${colors.bold}${colors.butterGold}📊 Session Usage & Metrics${colors.reset}\n`);
           const msgs = agent.getMessages();
           let userChars = 0;
           let assistantChars = 0;
@@ -587,6 +507,7 @@ export async function showMenu(
           }
           const totalEstTokens = Math.round((userChars + assistantChars + toolChars) / 4);
 
+          console.log(`\n${colors.butterGold}╭── 📊 Session Usage & Metrics ──────────────────────────────────╮${colors.reset}`);
           console.log(`  ${b.bold('Session ID:')}       ${colors.dim}${agent.getSessionId()}${colors.reset}`);
           console.log(`  ${b.bold('Active Model:')}     ${b.gold(getModelDisplayName(agent.getModel()))} ${colors.dim}(${agent.getModel()})${colors.reset}`);
           console.log(`  ${b.bold('Reasoning Effort:')} ${b.gold(agent.getEffort().toUpperCase())}`);
@@ -595,42 +516,38 @@ export async function showMenu(
           console.log(`  ${b.bold('Estimated Tokens:')} ${b.gold(`~${totalEstTokens.toLocaleString()} tokens`)}`);
           console.log(`  ${b.bold('Token Breakdown:')}  ${colors.dim}User: ~${Math.round(userChars/4)} tok • Assistant: ~${Math.round(assistantChars/4)} tok • Tools: ~${Math.round(toolChars/4)} tok${colors.reset}`);
           console.log(`  ${b.bold('Relay Status:')}     ${b.green('● LIVE (relay-gw.pages.dev)')}`);
-          console.log(`  ${b.bold('Auth Mode:')}        ${b.cream('Session Cookie / Key')}\n`);
-          await pressKeyToReturn();
-          break;
+          console.log(`${colors.butterGold}╰────────────────────────────────────────────────────────────────╯${colors.reset}\n`);
+          return;
         }
 
         case 'h': {
-          // Help & Shortcuts
-          stdout.write('\x1b[H\x1b[2J');
-          console.log(`\n  ${colors.bold}${colors.butterGold}❓ Help & Shortcuts Reference${colors.reset}\n`);
+          console.log(`\n${colors.bold}${colors.butterGold}❓ Help & Shortcuts Reference${colors.reset}\n`);
           console.log(`  ${b.bold('Keyboard Shortcuts:')}`);
           console.log(`    ${b.gold('Enter')}            Send prompt / execute selection`);
-          console.log(`    ${b.gold('Shift+Enter')}      Insert newline in prompt editor`);
-          console.log(`    ${b.gold('Tab')}              Autocomplete slash command or file path`);
-          console.log(`    ${b.gold('Ctrl+C')}           Cancel current stream / interrupt turn`);
-          console.log(`    ${b.gold('Esc / q')}          Dismiss autocomplete or return\n`);
+          console.log(`    ${b.gold('Shift+Enter')}      Insert newline in multi-line prompt editor`);
+          console.log(`    ${b.gold('Shift+Tab')}        Cycle reasoning effort slider (Low → Medium → High → XHigh → Max)`);
+          console.log(`    ${b.gold('Tab')}              Autocomplete command or complete path`);
+          console.log(`    ${b.gold('Ctrl+C')}           Interrupt active turn / abort inference`);
+          console.log(`    ${b.gold('Esc')}              Dismiss autocomplete popup or clear prompt\n`);
           console.log(`  ${b.bold('Core Slash Commands:')}`);
-          console.log(`    ${b.gold('/menu')}            Open this settings & command center`);
-          console.log(`    ${b.gold('/models')}          Visual model navigator and switcher`);
-          console.log(`    ${b.gold('/effort <level>')}  Set reasoning effort (max, high, med, low)`);
-          console.log(`    ${b.gold('/think <mode>')}    Toggle reasoning block (expand, collapse, hide)`);
-          console.log(`    ${b.gold('/copy')}            Copy last assistant response to clipboard`);
-          console.log(`    ${b.gold('/diff')}            View working tree git diff`);
-          console.log(`    ${b.gold('/usage')}           Inspect session token breakdown`);
-          console.log(`    ${b.gold('/export [file]')}   Export session history to Markdown`);
-          console.log(`    ${b.gold('/loop <prompt>')}   Run continuous prompt repeating loop`);
-          console.log(`    ${b.gold('/subagent <n> <t>')} Dispatch task to named subagent`);
-          console.log(`    ${b.gold('/compact')}         Melt conversation history into rollup`);
-          console.log(`    ${b.gold('/clear')}           Clear terminal screen and show banner`);
+          console.log(`    ${b.gold('/new [model]')}     Start fresh session bound to model & Supabase`);
+          console.log(`    ${b.gold('/sessions')}        List cloud sessions from Supabase across devices`);
+          console.log(`    ${b.gold('/resume <id>')}     Resume a session from Supabase cloud store`);
+          console.log(`    ${b.gold('/whoami')}          Show active user, role & daily token quota`);
+          console.log(`    ${b.gold('/quota')}           Inspect 50M daily token usage & progress`);
+          console.log(`    ${b.gold('/login')}           Sign in to Relay / Supabase account`);
+          console.log(`    ${b.gold('/logout')}          Sign out and clear local credentials`);
+          console.log(`    ${b.gold('/models')}          Open visual model navigator`);
+          console.log(`    ${b.gold('/menu')}            Open OMP-style command palette`);
+          console.log(`    ${b.gold('/clear')}           Clear terminal screen buffer (preserves session)`);
           console.log(`    ${b.gold('/exit')}            Save session state and quit\n`);
-          await pressKeyToReturn();
-          break;
+          return;
         }
       }
     }
   } finally {
-    cleanupAndExit();
+    clearInline();
+    stdout.write('\x1b[?25h');
   }
 }
 

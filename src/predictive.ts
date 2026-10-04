@@ -8,14 +8,62 @@ export interface SlashCommandInfo {
 }
 
 export const SLASH_COMMANDS: SlashCommandInfo[] = [
+  // Session & Cloud
   {
-    command: '/menu',
-    description: 'Open interactive dashboard & full control center',
-    category: 'Core',
+    command: '/new',
+    argsHint: '[model]',
+    description: 'Start a fresh session bound to model & synced with Supabase',
+    category: 'Session',
   },
   {
+    command: '/sessions',
+    description: 'List your cloud sessions from Supabase across devices',
+    category: 'Cloud',
+  },
+  {
+    command: '/resume',
+    argsHint: '<id>',
+    description: 'Resume a session from Supabase across devices',
+    category: 'Cloud',
+  },
+  {
+    command: '/sync',
+    description: 'Force sync active session turns to Supabase cloud',
+    category: 'Cloud',
+  },
+
+  // Auth & Account
+  {
+    command: '/whoami',
+    description: 'Show active logged-in account, role & daily token quota',
+    category: 'Account',
+  },
+  {
+    command: '/quota',
+    description: 'Inspect daily 50M token usage quota and account tier',
+    category: 'Account',
+  },
+  {
+    command: '/usage',
+    description: 'Show token breakdown (user, assistant, tool, all-time)',
+    category: 'Account',
+  },
+  {
+    command: '/login',
+    argsHint: '[user] [pass]',
+    description: 'Sign in to your Relay / Supabase account',
+    category: 'Account',
+  },
+  {
+    command: '/logout',
+    description: 'Sign out and clear local credentials',
+    category: 'Account',
+  },
+
+  // Models & Inference
+  {
     command: '/models',
-    description: 'Open redesigned visual model navigator & picker',
+    description: 'Open visual model navigator & search catalog',
     category: 'Models',
   },
   {
@@ -25,16 +73,24 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Models',
   },
   {
+    command: '/effort',
+    argsHint: '[max|high|medium|low]',
+    description: 'Cycle reasoning effort level (or press Shift+Tab)',
+    category: 'Models',
+  },
+  {
+    command: '/think',
+    argsHint: '[expand|collapse|hide|show]',
+    description: 'Toggle collapsible thinking blocks or inspect full reasoning trace',
+    category: 'Models',
+  },
+  {
     command: '/providers',
     description: 'Probe live upstream provider health & model counts',
     category: 'Models',
   },
-  {
-    command: '/loop',
-    argsHint: '<prompt>',
-    description: 'Start autonomous prompt repeating loop with auto-compaction',
-    category: 'Loop',
-  },
+
+  // Autonomous & Subagents
   {
     command: '/subagents',
     description: 'List native named subagents & model personas',
@@ -47,13 +103,21 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Subagents',
   },
   {
-    command: '/compact',
-    description: 'Melt & compact conversation history into memory rollup',
-    category: 'Session',
+    command: '/loop',
+    argsHint: '<prompt>',
+    description: 'Start autonomous prompt repeating loop with auto-compaction',
+    category: 'Loop',
+  },
+
+  // Tools & Workspace
+  {
+    command: '/diff',
+    description: 'View git working tree diff with syntax highlighting',
+    category: 'Tools',
   },
   {
-    command: '/sync',
-    description: 'Sync current session to Model Aggregator web app',
+    command: '/compact',
+    description: 'Melt & compact conversation history to free token budget',
     category: 'Session',
   },
   {
@@ -62,52 +126,37 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Session',
   },
   {
-    command: '/clear',
-    description: 'Clear terminal screen and show butter banner',
-    category: 'Core',
-  },
-  {
-    command: '/help',
-    description: 'Show all available commands and keyboard shortcuts',
-    category: 'Core',
-  },
-  {
-    command: '/think',
-    argsHint: '[expand|collapse|hide]',
-    description: 'Toggle collapsible thinking blocks or inspect full reasoning trace',
-    category: 'Core',
-  },
-  {
-    command: '/effort',
-    argsHint: '[max|high|medium|low]',
-    description: 'Configure reasoning effort level',
-    category: 'Models',
-  },
-  {
     command: '/copy',
     description: 'Copy last assistant response to system clipboard',
-    category: 'Core',
-  },
-  {
-    command: '/diff',
-    description: 'View git working tree diff with syntax highlighting',
     category: 'Tools',
   },
   {
     command: '/export',
     argsHint: '[path]',
     description: 'Export conversation session to Markdown file',
-    category: 'Session',
-  },
-  {
-    command: '/usage',
-    description: 'Show token usage breakdown and context metrics',
-    category: 'Session',
+    category: 'Tools',
   },
   {
     command: '/undo',
     description: 'Revert the last user and assistant interaction turn',
     category: 'Session',
+  },
+
+  // Core & Navigation
+  {
+    command: '/menu',
+    description: 'OMP-style interactive command palette',
+    category: 'Core',
+  },
+  {
+    command: '/clear',
+    description: 'Clear terminal screen buffer (preserves session messages)',
+    category: 'Core',
+  },
+  {
+    command: '/help',
+    description: 'Show all available commands and keyboard shortcuts',
+    category: 'Core',
   },
   {
     command: '/exit',
@@ -128,17 +177,17 @@ export function getPredictiveMatches(input: string): SlashCommandInfo[] {
 export function formatPredictiveHints(matches: SlashCommandInfo[]): string {
   if (matches.length === 0) return '';
   const lines: string[] = [
-    `  ${colors.butterMelt}╭── Suggested Commands (Press Tab to complete) ──────────────────────────╮${colors.reset}`,
+    `  ${colors.butterMelt}╭── Commands Palette (${matches.length} commands) ────────────────────────────────╮${colors.reset}`,
   ];
 
-  for (const m of matches.slice(0, 5)) {
+  for (const m of matches.slice(0, 10)) {
     const hint = m.argsHint ? ` ${colors.dim}${m.argsHint}${colors.reset}` : '';
-    const cmdStr = `${colors.bold}${colors.butterGold}${m.command}${colors.reset}${hint}`.padEnd(30, ' ');
+    const cmdStr = `${colors.bold}${colors.butterGold}${m.command}${colors.reset}${hint}`.padEnd(28, ' ');
     lines.push(`  ${colors.butterMelt}│${colors.reset}  ${cmdStr} ${colors.gray}• ${m.description}${colors.reset}`);
   }
 
-  if (matches.length > 5) {
-    lines.push(`  ${colors.butterMelt}│${colors.reset}  ${colors.dim}... and ${matches.length - 5} more matching commands${colors.reset}`);
+  if (matches.length > 10) {
+    lines.push(`  ${colors.butterMelt}│${colors.reset}  ${colors.dim}... and ${matches.length - 10} more commands (type to filter)${colors.reset}`);
   }
 
   lines.push(`  ${colors.butterMelt}╰────────────────────────────────────────────────────────────────────────╯${colors.reset}`);
