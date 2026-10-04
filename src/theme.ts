@@ -401,6 +401,13 @@ export interface WorkingBarRenderOptions {
   cwd?: string;
   turns?: number;
   tokens?: number;
+  interactive?: boolean;
+  inputBuffer?: string;
+  cursor?: number;
+  placeholder?: string;
+  onSteer?: (message: string) => void;
+  onCycleEffort?: (newEffort: string) => void;
+  onCancel?: () => void;
 }
 
 export function formatWorkingPromptBar(options: WorkingBarRenderOptions = {}): string[] {
@@ -408,9 +415,6 @@ export function formatWorkingPromptBar(options: WorkingBarRenderOptions = {}): s
   const cols = Math.max(20, Math.min(terminalCols, 100));
   const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
-  const line0 = `${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`;
-
-  // Line 1: spinner + active status
   const frame = options.spinnerFrame || `${colors.butterGold}🧈 ⠋${colors.reset}`;
   const rawStatus = options.statusText || 'Whipping up solution...';
   const cleanStatus = rawStatus.replace(/^🧈\s*/, '');
@@ -423,21 +427,117 @@ export function formatWorkingPromptBar(options: WorkingBarRenderOptions = {}): s
   if (stripAnsi(displayedStatus).length > maxStatusLen) {
     displayedStatus = displayedStatus.slice(0, Math.max(0, maxStatusLen - 1)) + '…';
   }
-  let line1 = `${prefix}${displayedStatus}${suffix}`;
-  while (stripAnsi(line1).length > cols && displayedStatus.length > 1) {
+  let statusLine = `${prefix}${displayedStatus}${suffix}`;
+  while (stripAnsi(statusLine).length > cols && displayedStatus.length > 1) {
     displayedStatus = displayedStatus.slice(0, -2) + '…';
-    line1 = `${prefix}${displayedStatus}${suffix}`;
+    statusLine = `${prefix}${displayedStatus}${suffix}`;
   }
 
-  const line2 = `${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`;
-
-  // Line 3: status footer with responsive compaction to never wrap
-  let leftStatus = `${colors.dim}esc to interrupt  •  ctrl+c cancel${colors.reset}`;
+  // Model & footer metadata
   const modelName = options.model ? getModelDisplayName(options.model) : 'Beurre';
   const effortTag = options.effort ? options.effort.toLowerCase() : 'high';
   const quotaTag = options.quotaText ? `${colors.cyan}${options.quotaText}${colors.reset}` : '';
   const userTag = options.user ? `${colors.butterCream}${options.user}${colors.reset}` : '';
 
+  // Interactive steering prompt bar mode (Claude Code / OMP standard)
+  if (options.interactive) {
+    const line0 = statusLine;
+    const line1 = `${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`;
+
+    // Line 2: interactive prompt line
+    const promptPrefix = `${colors.butterGold}${colors.bold}>${colors.reset} `;
+    const isBufferEmpty = !options.inputBuffer || options.inputBuffer.length === 0;
+    const defaultPlaceholder = 'Type a message to steer agent (Esc to cancel)...';
+    const placeholderText = options.placeholder || defaultPlaceholder;
+
+    let inputLine = '';
+    if (isBufferEmpty) {
+      const maxPlaceCols = Math.max(5, cols - 3);
+      const text = placeholderText.length > maxPlaceCols
+        ? placeholderText.slice(0, maxPlaceCols - 1) + '…'
+        : placeholderText;
+      inputLine = `${promptPrefix}${colors.darkGray}${text}${colors.reset}`;
+    } else {
+      const maxTextCols = Math.max(5, cols - 3);
+      const buf = options.inputBuffer!;
+      const cur = options.cursor !== undefined
+        ? Math.max(0, Math.min(options.cursor, buf.length))
+        : buf.length;
+      let displayText = buf;
+      if (buf.length > maxTextCols) {
+        if (cur < maxTextCols - 1) {
+          displayText = buf.slice(0, maxTextCols - 1) + '…';
+        } else if (cur > buf.length - (maxTextCols - 1)) {
+          const startIdx = buf.length - (maxTextCols - 1);
+          displayText = '…' + buf.slice(startIdx);
+        } else {
+          const windowSize = maxTextCols - 2;
+          const startIdx = cur - Math.floor(windowSize / 2);
+          const endIdx = startIdx + windowSize;
+          displayText = '…' + buf.slice(startIdx, endIdx) + '…';
+        }
+      }
+      inputLine = `${promptPrefix}${colors.bold}${colors.white}${displayText}${colors.reset}`;
+    }
+
+    const line3 = `${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`;
+
+    // Line 4: footer with responsive compaction
+    let leftStatus = `${colors.dim}esc to cancel • enter to steer • shift+tab effort${colors.reset}`;
+    let rightParts = [userTag, modelName, effortTag, quotaTag].filter(Boolean);
+    let rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+
+    let leftLen = stripAnsi(leftStatus).length;
+    let rightLen = stripAnsi(rightStatus).length;
+
+    if (leftLen + rightLen + 2 > cols) {
+      leftStatus = `${colors.dim}esc cancel  •  enter steer  •  shift+tab${colors.reset}`;
+      leftLen = stripAnsi(leftStatus).length;
+    }
+    if (leftLen + rightLen + 2 > cols) {
+      rightParts = [modelName, effortTag, quotaTag].filter(Boolean);
+      rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+      rightLen = stripAnsi(rightStatus).length;
+    }
+    if (leftLen + rightLen + 2 > cols) {
+      leftStatus = `${colors.dim}esc cancel  •  enter steer${colors.reset}`;
+      leftLen = stripAnsi(leftStatus).length;
+    }
+    if (leftLen + rightLen + 2 > cols) {
+      rightParts = [modelName, effortTag].filter(Boolean);
+      rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+      rightLen = stripAnsi(rightStatus).length;
+    }
+    if (leftLen + rightLen + 2 > cols) {
+      leftStatus = `${colors.dim}esc cancel${colors.reset}`;
+      leftLen = stripAnsi(leftStatus).length;
+    }
+    if (leftLen + rightLen + 2 > cols) {
+      rightParts = [modelName];
+      rightStatus = rightParts.join('');
+      rightLen = stripAnsi(rightStatus).length;
+    }
+    if (leftLen + rightLen + 2 > cols) {
+      const maxModelLen = Math.max(3, cols - leftLen - 3);
+      rightStatus = modelName.length > maxModelLen ? modelName.slice(0, maxModelLen - 1) + '…' : modelName;
+      rightLen = stripAnsi(rightStatus).length;
+    }
+
+    const padStatus = Math.max(1, cols - leftLen - rightLen);
+    let line4 = `${leftStatus}${' '.repeat(padStatus)}${rightStatus}`;
+    if (stripAnsi(line4).length > cols) {
+      line4 = line4.slice(0, cols);
+    }
+
+    return [line0, line1, inputLine, line3, line4];
+  }
+
+  // Classic 4-line bar (top divider, status, middle divider, footer)
+  const line0 = `${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`;
+  const line1 = statusLine;
+  const line2 = `${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`;
+
+  let leftStatus = `${colors.dim}esc to interrupt  •  ctrl+c cancel${colors.reset}`;
   let rightParts = [userTag, modelName, effortTag, quotaTag].filter(Boolean);
   let rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
 
@@ -448,45 +548,42 @@ export function formatWorkingPromptBar(options: WorkingBarRenderOptions = {}): s
     leftStatus = `${colors.dim}esc interrupt  •  ctrl+c${colors.reset}`;
     leftLen = stripAnsi(leftStatus).length;
   }
-
   if (leftLen + rightLen + 2 > cols) {
     rightParts = [modelName, effortTag, quotaTag].filter(Boolean);
     rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
     rightLen = stripAnsi(rightStatus).length;
   }
-
   if (leftLen + rightLen + 2 > cols) {
     rightParts = [modelName, effortTag].filter(Boolean);
     rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
     rightLen = stripAnsi(rightStatus).length;
   }
-
   if (leftLen + rightLen + 2 > cols) {
     leftStatus = `${colors.dim}esc interrupt${colors.reset}`;
     leftLen = stripAnsi(leftStatus).length;
   }
-
   if (leftLen + rightLen + 2 > cols) {
     rightParts = [modelName];
     rightStatus = rightParts.join('');
     rightLen = stripAnsi(rightStatus).length;
   }
-
   if (leftLen + rightLen + 2 > cols) {
     const maxModelLen = Math.max(3, cols - leftLen - 3);
-    const shortModel = modelName.length > maxModelLen ? modelName.slice(0, maxModelLen - 1) + '…' : modelName;
-    rightStatus = shortModel;
+    rightStatus = modelName.length > maxModelLen ? modelName.slice(0, maxModelLen - 1) + '…' : modelName;
     rightLen = stripAnsi(rightStatus).length;
   }
 
   const padStatus = Math.max(1, cols - leftLen - rightLen);
   let line3 = `${leftStatus}${' '.repeat(padStatus)}${rightStatus}`;
-
   if (stripAnsi(line3).length > cols) {
     line3 = line3.slice(0, cols);
   }
 
   return [line0, line1, line2, line3];
+}
+
+export function formatSteeringPromptBar(options: WorkingBarRenderOptions = {}): string[] {
+  return formatWorkingPromptBar({ ...options, interactive: true });
 }
 
 export class BeurreWorkingBar {
@@ -502,6 +599,15 @@ export class BeurreWorkingBar {
   private tokenBuffer = '';
   private lastFlushTime = 0;
   private onResizeBound: () => void;
+  private onDataBound: ((chunk: Buffer) => void) | null = null;
+  private wasRaw = false;
+
+  // Steering interactive input state
+  private inputBuffer = '';
+  private cursor = 0;
+  private placeholder = 'Type a message to steer agent (Esc to cancel)...';
+  private inPaste = false;
+  private pasteBuffer = '';
 
   // Active phase tracking for live dynamic progression
   private currentPhase: 'idle' | 'status' | 'thinking' | 'generating' | 'tool' = 'status';
@@ -509,6 +615,7 @@ export class BeurreWorkingBar {
   private phaseDetail = '';
   private phaseTokens = 0;
   private phaseTokPerSec = 0;
+  private phaseSnippet = '';
 
   constructor(options: WorkingBarRenderOptions = {}) {
     this.options = { ...options };
@@ -523,6 +630,220 @@ export class BeurreWorkingBar {
     return this.statusText;
   }
 
+  getInputBuffer(): string {
+    return this.inputBuffer;
+  }
+
+  setInputBuffer(val: string): void {
+    this.inputBuffer = val;
+    this.cursor = val.length;
+    if (this.isTTY && this.barDrawn) {
+      this.updateInputLine();
+    }
+  }
+
+  getCursor(): number {
+    return this.cursor;
+  }
+
+  getCursorCol(cols = process.stdout.columns || 80): number {
+    const effectiveCols = Math.max(10, Math.min(cols, 100));
+    if (!this.inputBuffer || this.inputBuffer.length === 0) {
+      return 3;
+    }
+    const maxTextCols = Math.max(5, effectiveCols - 3);
+    const bufLen = this.inputBuffer.length;
+    const cur = Math.max(0, Math.min(this.cursor, bufLen));
+    if (bufLen <= maxTextCols) {
+      return Math.min(effectiveCols, 3 + cur);
+    }
+    if (cur < maxTextCols - 1) {
+      return Math.min(effectiveCols, 3 + cur);
+    }
+    if (cur > bufLen - (maxTextCols - 1)) {
+      const startIdx = bufLen - (maxTextCols - 1);
+      return Math.min(effectiveCols, 3 + 1 + (cur - startIdx));
+    }
+    const windowSize = maxTextCols - 2;
+    const startIdx = cur - Math.floor(windowSize / 2);
+    return Math.min(effectiveCols, 3 + 1 + (cur - startIdx));
+  }
+
+  getEffort(): string {
+    return this.options.effort || 'high';
+  }
+
+  steer(message: string): void {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    this.inputBuffer = '';
+    this.cursor = 0;
+    if (this.isTTY && this.barDrawn) {
+      this.updateInputLine();
+    }
+    this.options.onSteer?.(trimmed);
+  }
+
+  handleInput(keyStr: string): void {
+    // Handle bracketed paste continuation
+    if (this.inPaste) {
+      if (keyStr.includes('\x1b[201~')) {
+        const parts = keyStr.split('\x1b[201~');
+        this.pasteBuffer += parts[0];
+        const cleanPaste = this.pasteBuffer.replace(/[\r\n]+/g, ' ');
+        this.inputBuffer = this.inputBuffer.slice(0, this.cursor) + cleanPaste + this.inputBuffer.slice(this.cursor);
+        this.cursor += cleanPaste.length;
+        this.inPaste = false;
+        this.pasteBuffer = '';
+        this.updateInputLine();
+      } else {
+        this.pasteBuffer += keyStr;
+      }
+      return;
+    }
+
+    // Handle bracketed paste start
+    if (keyStr.includes('\x1b[200~')) {
+      const parts = keyStr.split('\x1b[200~');
+      const rest = parts.slice(1).join('\x1b[200~');
+      if (rest.includes('\x1b[201~')) {
+        const pasteParts = rest.split('\x1b[201~');
+        const cleanPaste = pasteParts[0].replace(/[\r\n]+/g, ' ');
+        this.inputBuffer = this.inputBuffer.slice(0, this.cursor) + cleanPaste + this.inputBuffer.slice(this.cursor);
+        this.cursor += cleanPaste.length;
+        this.updateInputLine();
+      } else {
+        this.inPaste = true;
+        this.pasteBuffer = rest;
+      }
+      return;
+    }
+
+    // Pure Esc key (length 1) -> cancel/interrupt immediately
+    if (keyStr === '\x1b') {
+      this.inPaste = false;
+      this.pasteBuffer = '';
+      this.options.onCancel?.();
+      return;
+    }
+
+    // Ctrl+C -> cancel/interrupt immediately
+    if (keyStr === '\x03') {
+      this.options.onCancel?.();
+      return;
+    }
+
+    // Enter (\r or \n) -> steer agent
+    if (keyStr === '\r' || keyStr === '\n') {
+      const msg = this.inputBuffer.trim();
+      if (msg.length > 0) {
+        this.inputBuffer = '';
+        this.cursor = 0;
+        this.updateInputLine();
+        this.options.onSteer?.(msg);
+      }
+      return;
+    }
+
+    // Shift+Tab effort cycling (\x1b[Z backtab, \x1b[27;2;9~, \x1b[9;2u)
+    if (keyStr === '\x1b[Z' || keyStr === '\x1b[27;2;9~' || keyStr === '\x1b[9;2u') {
+      const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
+      const curEffort = (this.options.effort || 'high').toLowerCase();
+      const curIdx = efforts.indexOf(curEffort);
+      const nextEffort = efforts[(curIdx + 1) % efforts.length];
+      this.options.effort = nextEffort;
+      this.options.onCycleEffort?.(nextEffort);
+      this.updateFooterLine();
+      return;
+    }
+
+    // Backspace (\x7f or \x08)
+    if (keyStr === '\x7f' || keyStr === '\x08') {
+      if (this.cursor > 0) {
+        this.inputBuffer = this.inputBuffer.slice(0, this.cursor - 1) + this.inputBuffer.slice(this.cursor);
+        this.cursor--;
+        this.updateInputLine();
+      }
+      return;
+    }
+
+    // Delete (\x1b[3~)
+    if (keyStr === '\x1b[3~') {
+      if (this.cursor < this.inputBuffer.length) {
+        this.inputBuffer = this.inputBuffer.slice(0, this.cursor) + this.inputBuffer.slice(this.cursor + 1);
+        this.updateInputLine();
+      }
+      return;
+    }
+
+    // Left Arrow (\x1b[D or \x1b[OD)
+    if (keyStr === '\x1b[D' || keyStr === '\x1b[OD') {
+      if (this.cursor > 0) {
+        this.cursor--;
+        this.updateCursorPos();
+      }
+      return;
+    }
+
+    // Right Arrow (\x1b[C or \x1b[OC)
+    if (keyStr === '\x1b[C' || keyStr === '\x1b[OC') {
+      if (this.cursor < this.inputBuffer.length) {
+        this.cursor++;
+        this.updateCursorPos();
+      }
+      return;
+    }
+
+    // Home (\x1b[H, \x1b[1~, \x01)
+    if (keyStr === '\x1b[H' || keyStr === '\x1b[1~' || keyStr === '\x01') {
+      this.cursor = 0;
+      this.updateCursorPos();
+      return;
+    }
+
+    // End (\x1b[F, \x1b[4~, \x05)
+    if (keyStr === '\x1b[F' || keyStr === '\x1b[4~' || keyStr === '\x05') {
+      this.cursor = this.inputBuffer.length;
+      this.updateCursorPos();
+      return;
+    }
+
+    // Ctrl+U (kill line to start)
+    if (keyStr === '\x15') {
+      this.inputBuffer = this.inputBuffer.slice(this.cursor);
+      this.cursor = 0;
+      this.updateInputLine();
+      return;
+    }
+
+    // Ctrl+K (kill line to end)
+    if (keyStr === '\x0b') {
+      this.inputBuffer = this.inputBuffer.slice(0, this.cursor);
+      this.updateInputLine();
+      return;
+    }
+
+    // Ctrl+W or Alt+Backspace (delete word left)
+    if (keyStr === '\x17' || keyStr === '\x1b\x7f') {
+      let idx = this.cursor;
+      while (idx > 0 && /\s/.test(this.inputBuffer[idx - 1])) idx--;
+      while (idx > 0 && !/\s/.test(this.inputBuffer[idx - 1])) idx--;
+      this.inputBuffer = this.inputBuffer.slice(0, idx) + this.inputBuffer.slice(this.cursor);
+      this.cursor = idx;
+      this.updateInputLine();
+      return;
+    }
+
+    // Printable text or bracketed/raw paste
+    if (!keyStr.startsWith('\x1b') && !keyStr.startsWith('\x00') && keyStr.charCodeAt(0) >= 32) {
+      const cleanStr = keyStr.replace(/[\r\n]+/g, ' ');
+      this.inputBuffer = this.inputBuffer.slice(0, this.cursor) + cleanStr + this.inputBuffer.slice(this.cursor);
+      this.cursor += cleanStr.length;
+      this.updateInputLine();
+      return;
+    }
+  }
+
   start(initialStatus = 'Whipping up solution...'): void {
     this.statusText = initialStatus.replace(/^🧈\s*/, '');
     this.currentPhase = 'status';
@@ -533,15 +854,30 @@ export class BeurreWorkingBar {
     this.barDrawn = false;
     this.tokenBuffer = '';
     this.lastFlushTime = Date.now();
+    this.inputBuffer = '';
+    this.cursor = 0;
 
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
 
+    // Hook up stdin for steering input
+    if (process.stdin.isTTY) {
+      this.wasRaw = Boolean(process.stdin.isRaw);
+      try {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        this.onDataBound = (chunk: Buffer) => {
+          this.handleInput(chunk.toString('utf-8'));
+        };
+        process.stdin.on('data', this.onDataBound);
+      } catch {}
+    }
+
     if (!this.isTTY) return;
 
-    process.stdout.write('\x1b[?25l'); // Hide cursor
+    process.stdout.write('\x1b[?25h'); // Show cursor on steering prompt line
     this.renderInitialBar();
 
     if (process.stdout.on) {
@@ -559,7 +895,8 @@ export class BeurreWorkingBar {
         }
       } else if (this.currentPhase === 'thinking' && this.phaseStartTime > 0) {
         const elapsed = (Date.now() - this.phaseStartTime) / 1000;
-        this.statusText = `Thinking (~${this.phaseTokens} tokens • ${elapsed.toFixed(1)}s)...`;
+        const snippetSuffix = this.phaseSnippet ? `: ${this.phaseSnippet}...` : '...';
+        this.statusText = `Thinking (~${this.phaseTokens} tokens • ${elapsed.toFixed(1)}s)${snippetSuffix}`;
       } else if (this.currentPhase === 'generating' && this.phaseStartTime > 0) {
         const elapsed = (Date.now() - this.phaseStartTime) / 1000;
         const speed = this.phaseTokPerSec > 0
@@ -571,7 +908,7 @@ export class BeurreWorkingBar {
       if (this.tokenBuffer.length > 0) {
         this.flushTokens();
       } else {
-        this.updateLineInPlace();
+        this.updateStatusLineInPlace();
       }
     }, 80);
   }
@@ -580,6 +917,7 @@ export class BeurreWorkingBar {
     this.currentPhase = 'status';
     this.phaseStartTime = Date.now();
     this.phaseDetail = '';
+    this.phaseSnippet = '';
     this.statusText = status.replace(/^🧈\s*/, '');
     if (icon !== undefined) {
       this.customIcon = icon;
@@ -587,26 +925,29 @@ export class BeurreWorkingBar {
       this.customIcon = '';
     }
     if (this.isTTY && this.barDrawn) {
-      this.updateLineInPlace();
+      this.updateStatusLineInPlace();
     }
   }
 
-  setThinking(tokens: number, elapsedSec?: number): void {
+  setThinking(tokens: number, elapsedSec?: number, snippet?: string): void {
     this.currentPhase = 'thinking';
     this.customIcon = '🧠';
     this.phaseTokens = tokens;
+    this.phaseSnippet = snippet || '';
     if (elapsedSec !== undefined && elapsedSec > 0) {
       this.phaseStartTime = Date.now() - Math.round(elapsedSec * 1000);
-      this.statusText = `Thinking (~${tokens} tokens • ${elapsedSec.toFixed(1)}s)...`;
+      const snippetSuffix = snippet ? `: ${snippet}...` : '...';
+      this.statusText = `Thinking (~${tokens} tokens • ${elapsedSec.toFixed(1)}s)${snippetSuffix}`;
     } else {
       if (this.phaseStartTime === 0) {
         this.phaseStartTime = Date.now();
       }
       const elapsed = Math.max(0, (Date.now() - this.phaseStartTime) / 1000);
-      this.statusText = `Thinking (~${tokens} tokens • ${elapsed.toFixed(1)}s)...`;
+      const snippetSuffix = snippet ? `: ${snippet}...` : '...';
+      this.statusText = `Thinking (~${tokens} tokens • ${elapsed.toFixed(1)}s)${snippetSuffix}`;
     }
     if (this.isTTY && this.barDrawn) {
-      this.updateLineInPlace();
+      this.updateStatusLineInPlace();
     }
   }
 
@@ -628,7 +969,7 @@ export class BeurreWorkingBar {
     this.phaseTokPerSec = tokPerSec || (elapsed > 0 ? tokens / elapsed : 0);
     this.statusText = `Generating (~${tokens} tokens • ${speed}${elapsed.toFixed(1)}s)...`;
     if (this.isTTY && this.barDrawn) {
-      this.updateLineInPlace();
+      this.updateStatusLineInPlace();
     }
   }
 
@@ -680,7 +1021,7 @@ export class BeurreWorkingBar {
       this.statusText = `Executing ${detail}...`;
     }
     if (this.isTTY && this.barDrawn) {
-      this.updateLineInPlace();
+      this.updateStatusLineInPlace();
     }
   }
 
@@ -722,6 +1063,17 @@ export class BeurreWorkingBar {
       clearInterval(this.timer);
       this.timer = null;
     }
+    if (this.onDataBound) {
+      process.stdin.removeListener('data', this.onDataBound);
+      this.onDataBound = null;
+      if (process.stdin.isTTY && !this.wasRaw) {
+        try {
+          process.stdin.setRawMode(false);
+        } catch {}
+      }
+    }
+    this.inPaste = false;
+    this.pasteBuffer = '';
     if (this.tokenBuffer) {
       const text = this.tokenBuffer;
       this.tokenBuffer = '';
@@ -752,36 +1104,95 @@ export class BeurreWorkingBar {
   }
 
   private renderInitialBar(): void {
+    const cols = process.stdout.columns || 80;
     const lines = formatWorkingPromptBar({
-      cols: process.stdout.columns || 80,
+      cols,
       spinnerFrame: this.getCurrentFrame(),
       statusText: this.statusText,
       model: this.options.model,
       effort: this.options.effort,
       user: this.options.user,
       quotaText: this.options.quotaText,
+      interactive: true,
+      inputBuffer: this.inputBuffer,
+      cursor: this.cursor,
+      placeholder: this.placeholder,
     });
-    process.stdout.write(lines[0] + '\n' + lines[1] + '\n' + lines[2] + '\n' + lines[3]);
+    process.stdout.write(lines.join('\n'));
+    // Cursor is currently at end of Line 4 (footer). Move up 2 lines to Line 2 and column getCursorCol()
+    process.stdout.write(`\x1b[2A\r\x1b[${this.getCursorCol(cols)}G`);
     this.barDrawn = true;
   }
 
-  private updateLineInPlace(): void {
+  private updateStatusLineInPlace(): void {
     if (!this.barDrawn || !this.isTTY) return;
+    const cols = process.stdout.columns || 80;
     const lines = formatWorkingPromptBar({
-      cols: process.stdout.columns || 80,
+      cols,
       spinnerFrame: this.getCurrentFrame(),
       statusText: this.statusText,
       model: this.options.model,
       effort: this.options.effort,
       user: this.options.user,
       quotaText: this.options.quotaText,
+      interactive: true,
+      inputBuffer: this.inputBuffer,
+      cursor: this.cursor,
+      placeholder: this.placeholder,
     });
-    process.stdout.write(`\x1b[2A\r\x1b[2K${lines[1]}\x1b[2B\r`);
+    // From Line 2, move up 2 lines to Line 0, clear line, write lines[0], move down 2 lines back to Line 2, restore column
+    process.stdout.write(`\x1b[2A\r\x1b[2K${lines[0]}\x1b[2B\r\x1b[${this.getCursorCol(cols)}G`);
+  }
+
+  private updateInputLine(): void {
+    if (!this.barDrawn || !this.isTTY) return;
+    const cols = process.stdout.columns || 80;
+    const lines = formatWorkingPromptBar({
+      cols,
+      spinnerFrame: this.getCurrentFrame(),
+      statusText: this.statusText,
+      model: this.options.model,
+      effort: this.options.effort,
+      user: this.options.user,
+      quotaText: this.options.quotaText,
+      interactive: true,
+      inputBuffer: this.inputBuffer,
+      cursor: this.cursor,
+      placeholder: this.placeholder,
+    });
+    // Cursor is on Line 2. Clear Line 2, write lines[2], restore column
+    process.stdout.write(`\r\x1b[2K${lines[2]}\r\x1b[${this.getCursorCol(cols)}G`);
+  }
+
+  private updateFooterLine(): void {
+    if (!this.barDrawn || !this.isTTY) return;
+    const cols = process.stdout.columns || 80;
+    const lines = formatWorkingPromptBar({
+      cols,
+      spinnerFrame: this.getCurrentFrame(),
+      statusText: this.statusText,
+      model: this.options.model,
+      effort: this.options.effort,
+      user: this.options.user,
+      quotaText: this.options.quotaText,
+      interactive: true,
+      inputBuffer: this.inputBuffer,
+      cursor: this.cursor,
+      placeholder: this.placeholder,
+    });
+    // From Line 2, move down 2 lines to Line 4, clear line, write lines[4], move up 2 lines back to Line 2, restore column
+    process.stdout.write(`\x1b[2B\r\x1b[2K${lines[4]}\x1b[2A\r\x1b[${this.getCursorCol(cols)}G`);
+  }
+
+  private updateCursorPos(): void {
+    if (!this.barDrawn || !this.isTTY) return;
+    process.stdout.write(`\r\x1b[${this.getCursorCol()}G`);
   }
 
   private clearBar(): void {
     if (!this.barDrawn || !this.isTTY) return;
-    process.stdout.write('\r\x1b[3A\x1b[J');
+    // Cursor is on Line 2. Move up 2 lines to Line 0, clear from Line 0 down to bottom of screen
+    process.stdout.write('\x1b[2A\r\x1b[J');
     this.barDrawn = false;
   }
 

@@ -17,10 +17,24 @@
    - Melted Amber (`#F59E0B` / `\x1b[38;2;245;158;11m`)
    - Toasted Crust (`#D97706` / `\x1b[38;2;217;119;6m`)
    - Muted border tones (`#57534E`)
-2. **Pinned Bottom Prompt Bar:**
+2. **Interactive Steering & Pinned Bottom Prompt Bar:**
    - The Claude Code / OMP-style prompt bar is anchored at the bottom of the viewport at all times:
      - **During User Input (`BeurreEditor.readPrompt`):** Shows prompt prefix (`> `), placeholder/typed text, divider rule, and footer status (`esc to cancel • tab complete • shift+tab effort   user · Model · effort · quota`).
-     - **During Agent Working / Turn Execution (`BeurreWorkingBar`):** Remains anchored at the bottom displaying live progress spinner, current phase/tool (e.g. `🧈 ⠋ Whipping up solution...`, `🧠 ⠹ Thinking (~140 tokens • 1.6s)...`, `🧈 ⠸ Generating (~85 tok • 41.2 tok/s • 2.0s)...`, `⚡ ⠴ Executing bash: bun test...`), divider rule, and metadata footer.
+     - **During Agent Working / Turn Execution (`BeurreWorkingBar`):**
+       Status/tool/thinking lines appear **above** the chat bar:
+       ```text
+       ● Read(~/Projects/beurre/src/relay.ts) (ctrl+o to expand)
+       ⣟ Thinking (~140 tokens • 2.1s): Initial hypothesis...
+       ────────────────────────────────────────────────────────────────────────────────────────
+       > [Interactive input prompt where the user can type steering messages while model works]
+       ────────────────────────────────────────────────────────────────────────────────────────
+       esc to cancel • enter to steer • shift+tab effort          admin · GLM 5.3 Flash · high · ∞
+       ```
+       - The chat bar remains fully interactive with `> ` input line while the model is thinking, generating, or running tools.
+       - When prompt is empty: shows placeholder `Type a message to steer agent (Esc to cancel)...`.
+       - Pressing `Enter` steers the agent (interrupts current generation or injects steering prompt into the turn loop).
+       - `Shift+Tab` cycles reasoning effort in real-time.
+       - `Esc` cancels / interrupts the turn immediately.
      - Content (user card, thinking process, agent responses, high-contrast tool calls, tool results) streams **above** the pinned bottom prompt bar with zero jumping or clobbering.
 3. **Model Aggregator & Cloudflare Relay Gateway Integration:**
    - Live upstream endpoint: `https://relay-gw.pages.dev`
@@ -89,10 +103,10 @@ The custom terminal editor (`src/editor.ts`) provides high-fidelity Claude Code 
 
 | Keybinding | Scope | Functionality |
 |---|---|---|
-| `Enter` | Single-line buffer | Submits the prompt to Beurre. |
+| `Enter` | Active Working Turn | Steers running agent with typed message, immediately interrupting current generation or injecting into turn loop. |
 | `Enter` | Autocomplete open | Accepts selected slash command. |
 | `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | Editor | Inserts a newline, dynamically transitioning editor to multi-line box mode. |
-| `Shift+Tab` | Editor | Cycles reasoning effort levels (`low` → `medium` → `high` → `max`). |
+| `Shift+Tab` | Editor / Working Turn | Cycles reasoning effort levels in real-time (`low` → `medium` → `high` → `xhigh` → `max`). |
 | `Tab` | Command input | Autocompletes top matching predictive slash command. |
 | `↑` / `↓` Arrows | Editor / History | Navigates command history (or lines in multi-line mode; scrolls autocomplete list if open). |
 | `←` / `→` Arrows | Editor | Character-by-character navigation. (Right Arrow accepts ghost command autocomplete hint at line end). |
@@ -140,13 +154,15 @@ When interacting with Beurre or running tasks:
 
 ### Bottom Prompt Bar Mechanics
 - During prompt input, `BeurreEditor.readPrompt` renders the prompt box at the bottom.
-- When submitted, `BeurreWorkingBar` takes over the bottom 4 terminal lines:
-  - Top divider rule: `────────────────────────────────────────────────────────────────────────`
-  - Active status line: `[Icon] [Spinner] [Phase / Action Message]` (e.g. `🧈 ⠋ Whipping up solution...`, `🧠 ⠹ Thinking (~140 tokens • 1.6s)...`, `⚡ ⠴ Executing bash: bun test (2.1s)...`, `● ⠸ Generating (~90 tokens • 42 tok/s • 2.1s)...`)
-  - Middle divider rule: `────────────────────────────────────────────────────────────────────────`
-  - Footer status line: `esc to interrupt • ctrl+c cancel       user · model · effort · quota`
-- Content (thinking blocks, agent response tokens, high-contrast tool calls, tool results) streams **above** the bar via `workingBar.writeAbove(chunk)`.
-- When the turn finishes, `workingBar.stop()` smoothly clears the 4 lines and restores cursor visibility without screen clobbering.
+- When submitted, `BeurreWorkingBar` takes over the bottom lines with a fully interactive steering chat bar:
+  - **Line 0 (Status Line above Chat Bar):** `[Icon] [Spinner] [Phase / Action Message]` (e.g. `🧈 ⠋ Whipping up solution...`, `🧠 ⠹ Thinking (~140 tokens • 1.6s)...`, `⚡ ⠴ Executing bash: bun test (2.1s)...`, `● ⠸ Generating (~90 tokens • 42 tok/s • 2.1s)...`)
+  - **Line 1 (Top Divider Rule):** `────────────────────────────────────────────────────────────────────────`
+  - **Line 2 (Interactive Steering Prompt Line):** `> [user typed steering message]` or placeholder `Type a message to steer agent (Esc to cancel)...` with real-time blinking cursor.
+  - **Line 3 (Bottom Divider Rule):** `────────────────────────────────────────────────────────────────────────`
+  - **Line 4 (Footer Status Line):** `esc to cancel • enter to steer • shift+tab effort          user · model · effort · quota`
+- Content (thinking blocks, agent response tokens, high-contrast tool calls, tool results) streams **above** the prompt bar via `workingBar.writeAbove(chunk)`.
+- Users can type steering instructions at any time while the model works; pressing `Enter` injects the steering prompt and immediately interrupts/redirects agent generation.
+- When the turn finishes, `workingBar.stop()` smoothly clears the lines and restores cursor visibility without screen clobbering.
 
 ### AGENTS.md Change-Tracking Protocol (CRITICAL)
 - Whenever any model modifies project code, it **MUST** record the changes under Section 8 of this file.
@@ -176,7 +192,65 @@ All tests must pass with **100% green status** (0 failures).
 
 > **AI AGENT INSTRUCTION:** Append all future changes to this section in reverse chronological order.
 
+### [2026-10-04] — Steering Bar Robustness, Sliding Window Cursor Positioning, Bracketed Paste & Strict Role Alternation
+- **Author/Agent:** Antigravity / Beurre Engineering Review & Fix Agent
+- **Issues Identified in Prior Attempt & Fixed:**
+  1. **Strict Message Role Alternation on Early Steering (`src/agent.ts`):**
+     - When steering interrupted before assistant tokens streamed, the previous code skipped recording an assistant message and pushed a user message, resulting in consecutive `user` messages that violated Anthropic Claude and strict API schemas (causing HTTP 400).
+     - Fixed by inserting an interrupted assistant turn marker `[Turn interrupted by user steering before response generation]` when previous message is `user`, and combining multiple rapid steering messages with `\n\n`.
+  2. **Cursor Column Overflow & Horizontal Sliding Window (`src/theme.ts`):**
+     - When typing steering messages longer than terminal width, the prompt truncated from character 0, hiding the user's active typing position. Unbounded cursor movement `\x1b[${3 + this.cursor}G` sent the cursor past screen edge into next row, breaking row math.
+     - Implemented horizontal cursor-aware sliding window in `formatWorkingPromptBar` and `getCursorCol()` helper in `BeurreWorkingBar`, keeping the view centered around active typing and cursor bounded within `[3, cols]`.
+  3. **Terminal Bracketed Paste Support (`src/theme.ts`):**
+     - Terminals sending `\x1b[200~` bracketed paste sequences had their pastes dropped by `!keyStr.startsWith('\x1b')`.
+     - Implemented bracketed paste parsing with newline normalization to spaces in `BeurreWorkingBar.handleInput`.
+  4. **Reasoning State Leak on Steering (`src/repl.ts`, `src/loop.ts`):**
+     - Steering mid-generation reset tokens but left `accumulatedReasoning` and `thinkingBlockRendered` intact, preventing thinking blocks from rendering on subsequent steered steps.
+     - Reset reasoning state, thinking start time, and flags on steer in REPL and loop runner.
+  5. **Thinking Snippet Support Matching Claude Code Template:**
+     - Enhanced `setThinking` to accept optional reasoning snippet (`Thinking (~140 tokens • 2.1s): Initial hypothesis...`), matching the exact Claude Code specification.
+  6. **Clean Cancellation Feedback on Esc (`src/repl.ts`):**
+     - Added explicit `🧈 Turn cancelled by user.` feedback upon `Esc` abort.
+- **Files Modified:**
+  - `src/theme.ts`: Horizontal sliding window, `getCursorCol()`, bracketed paste handling, thinking snippet support.
+  - `src/agent.ts`: Strict role alternation and multi-message steering combination.
+  - `src/repl.ts`: Reasoning state reset on steer, thinking snippet passing, cancellation feedback.
+  - `src/loop.ts`: Reasoning state reset on steer, thinking snippet passing.
+  - `tests/theme.test.ts`: Added tests for `getCursorCol` bounding, bracketed paste, thinking snippets, and steering queues.
+  - `AGENTS.md`: Appended entry to Changelog.
+- **Verification:**
+  - `bun test` passes across all 14 test suites with 81 passed tests and 0 failures.
+
+### [2026-10-04] — Interactive Steering Prompt Bar, Mid-Turn Generation Interruption & Stdin Integration
+- **Author/Agent:** Antigravity / Beurre Interactive Steering Agent
+- **Issues Identified in Prior Attempt & Fixed:**
+  1. **Status Text Inadvertently Placed Inside Chat Bar:**
+     - Previously, `🧈 ⠸ Whipping up solution...` was placed inside the chat bar between the two horizontal divider rules, overwriting the prompt input line `> ` and preventing user interaction during turns.
+     - Redesigned `BeurreWorkingBar` and `formatWorkingPromptBar` to place the status / tool / thinking lines strictly **above** the chat bar, while maintaining an active interactive prompt input line (`> `) with real-time cursor blinking between the divider lines.
+  2. **Active Mid-Turn Steering Support:**
+     - Implemented interactive keyboard listening on `process.stdin` (raw mode) inside `BeurreWorkingBar`. Users can type steering instructions at any time while the agent thinks, streams tokens, or executes tools.
+     - When prompt is empty, shows placeholder: `Type a message to steer agent (Esc to cancel)...`.
+     - When user hits `Enter`, `onSteer` triggers:
+       - Displays user card above the prompt bar (`formatUserMessageCard(message)`).
+       - Injects steering instruction into `BeurreAgent.steer(message)`.
+       - If generation was in progress, immediately aborts the sub-step via `currentStepAbortController.abort('steer')` and loops with the steering prompt appended to history.
+       - If tool was in progress, drains the steering queue and injects steering prompt before the next inference step.
+  3. **Real-Time Effort Cycling with Shift+Tab:**
+     - In the active steering prompt bar, pressing `Shift+Tab` cycles reasoning effort (`low` → `medium` → `high` → `xhigh` → `max`) in real-time and calls `agent.setEffort(newEffort)`, dynamically repainting the footer status bar without screen flicker.
+  4. **Instant Cancellation via Esc / Ctrl+C:**
+     - Pressing `Esc` or `Ctrl+C` in the active working bar immediately aborts the active `AbortController`, cleanly stopping the turn.
+- **Files Modified:**
+  - `src/theme.ts`: Added interactive steering mode to `formatWorkingPromptBar`, exported `formatSteeringPromptBar`, added `inputBuffer`, `cursor`, `handleInput`, `updateInputLine`, `updateStatusLineInPlace`, and `updateFooterLine` to `BeurreWorkingBar`.
+  - `src/agent.ts`: Added `steer()`, `getSteeringQueue()`, `isTurnRunning()`, and updated `runTurn()` loop with chained sub-step abort controllers and mid-generation steering injection.
+  - `src/repl.ts`: Wired `onSteer`, `onCycleEffort`, and `onCancel` to `BeurreWorkingBar` during turn execution.
+  - `src/loop.ts`: Wired `onSteer`, `onCycleEffort`, and `onCancel` to `BeurreWorkingBar` in `BeurreLoopRunner`.
+  - `tests/theme.test.ts`: Added tests for `formatSteeringPromptBar`, typed input rendering, narrow terminal compliance, `BeurreWorkingBar` keyboard input handling, and `BeurreAgent` steering queue.
+  - `AGENTS.md`: Updated Core Tenets, Keybindings, Prompt Bar Mechanics, and Changelog.
+- **Verification:**
+  - `bun test` passes across all 14 test suites with 78 passed tests and 0 failures.
+
 ### [2026-10-04] — Robust Working Bar, Adaptive Compaction, Border Math & Protocol Enforcement
+
 - **Author/Agent:** Antigravity / Beurre Engineering Review Agent
 - **Issues Identified in Prior Attempt & Fixed:**
   1. **Line 3 Terminal Width Overflow & Screen Drift:**

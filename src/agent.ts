@@ -27,6 +27,9 @@ export class BeurreAgent {
   private effort: string = 'high';
   private sessionId: string;
   private autoSync: boolean;
+  private steeringQueue: string[] = [];
+  private currentStepAbortController: AbortController | null = null;
+  private isRunningTurn: boolean = false;
 
   constructor(options: AgentOptions = {}) {
     this.cwd = options.cwd || process.cwd();
@@ -151,95 +154,205 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
     return this.sessionId;
   }
 
+  steer(message: string): void {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    this.steeringQueue.push(trimmed);
+    if (this.currentStepAbortController) {
+      this.currentStepAbortController.abort('steer');
+    }
+  }
+
+  getSteeringQueue(): string[] {
+    return [...this.steeringQueue];
+  }
+
+  isTurnRunning(): boolean {
+    return this.isRunningTurn;
+  }
+
   async runTurn(prompt: string, callbacks: AgentCallbacks = {}, signal?: AbortSignal): Promise<string> {
     this.messages.push({ role: 'user', content: prompt });
+    this.isRunningTurn = true;
 
     let finalResponse = '';
     let turnCount = 0;
     const maxTurns = 25;
 
-    while (turnCount < maxTurns) {
-      turnCount++;
-      if (signal?.aborted) break;
-
-      callbacks.onStatus?.('🧈 Whipping up solution...');
-
-      let assistantContent = '';
-      const result = await relay.streamChatCompletion({
-        model: this.currentModel,
-        effort: this.effort,
-        messages: this.messages,
-        tools: BEURRE_TOOLS,
-        signal,
-        onToken: (tok) => {
-          assistantContent += tok;
-          callbacks.onToken?.(tok);
-        },
-        onReasoning: (res) => {
-          callbacks.onReasoning?.(res);
-        },
-      });
-
-      finalResponse = assistantContent || result.content;
-
-      if (!result.toolCalls || result.toolCalls.length === 0) {
-        // Model concluded turn without further tool calls
-        this.messages.push({
-          role: 'assistant',
-          content: finalResponse,
-        });
-        break;
-      }
-
-      // Record assistant message with tool calls
-      this.messages.push({
-        role: 'assistant',
-        content: finalResponse,
-        tool_calls: result.toolCalls.map((tc) => ({
-          id: tc.id,
-          type: 'function',
-          function: {
-            name: tc.name,
-            arguments: tc.rawArguments,
-          },
-        })),
-      });
-
-      // Execute tool calls
-      for (const tc of result.toolCalls) {
+    try {
+      while (turnCount < maxTurns) {
+        turnCount++;
         if (signal?.aborted) break;
 
-        callbacks.onToolStart?.(tc.name, tc.arguments);
-
-        const toolRes = await executeTool(tc.id, tc.name, tc.arguments, {
-          cwd: this.cwd,
-          signal,
-          onOutput: (chunk) => {
-            // live tool streaming if needed
-          },
-        });
-
-        callbacks.onToolEnd?.(tc.name, toolRes.output, toolRes.isError, toolRes.diff);
-
-        let toolMessageContent = toolRes.output;
-        if (!toolRes.isError && (tc.name === 'write' || tc.name === 'edit')) {
-          const targetPath = tc.arguments?.path || '';
-          if (
-            !targetPath.endsWith('AGENTS.md') &&
-            !targetPath.endsWith('CLAUDE.md') &&
-            !targetPath.endsWith('PROJECT.md')
-          ) {
-            toolMessageContent += '\n\n[PROTOCOL REMINDER: You modified project code. You must also update AGENTS.md (under ## 📝 Changelog & Code Modifications) with the details of your changes before completing your task!]';
+        // Drain any pending steering messages before starting completion
+        const pendingSteer: string[] = [];
+        while (this.steeringQueue.length > 0) {
+          pendingSteer.push(this.steeringQueue.shift()!);
+        }
+        if (pendingSteer.length > 0) {
+          callbacks.onStatus?.('Steering agent...');
+          const combined = pendingSteer.join('\n\n');
+          if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
+            this.messages[this.messages.length - 1].content += '\n\n' + combined;
+          } else {
+            this.messages.push({ role: 'user', content: combined });
           }
         }
 
+        callbacks.onStatus?.('🧈 Whipping up solution...');
+
+        // Step abort controller chained to outer signal
+        this.currentStepAbortController = new AbortController();
+        const stepSignal = this.currentStepAbortController.signal;
+        const onOuterAbort = () => this.currentStepAbortController?.abort();
+        signal?.addEventListener('abort', onOuterAbort, { once: true });
+
+        let assistantContent = '';
+        let result: any = null;
+        let wasSteered = false;
+
+        try {
+          result = await relay.streamChatCompletion({
+            model: this.currentModel,
+            effort: this.effort,
+            messages: this.messages,
+            tools: BEURRE_TOOLS,
+            signal: stepSignal,
+            onToken: (tok) => {
+              assistantContent += tok;
+              callbacks.onToken?.(tok);
+            },
+            onReasoning: (res) => {
+              callbacks.onReasoning?.(res);
+            },
+          });
+        } catch (err: any) {
+          if (signal?.aborted) {
+            throw err;
+          }
+          if (stepSignal.aborted && (this.steeringQueue.length > 0 || stepSignal.reason === 'steer')) {
+            wasSteered = true;
+          } else {
+            throw err;
+          }
+        } finally {
+          signal?.removeEventListener('abort', onOuterAbort);
+          this.currentStepAbortController = null;
+        }
+
+        if (wasSteered || this.steeringQueue.length > 0) {
+          if (assistantContent.trim()) {
+            this.messages.push({
+              role: 'assistant',
+              content: assistantContent,
+            });
+          } else if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
+            this.messages.push({
+              role: 'assistant',
+              content: '[Turn interrupted by user steering before response generation]',
+            });
+          }
+          const steerMsgs: string[] = [];
+          while (this.steeringQueue.length > 0) {
+            steerMsgs.push(this.steeringQueue.shift()!);
+          }
+          if (steerMsgs.length > 0) {
+            this.messages.push({ role: 'user', content: steerMsgs.join('\n\n') });
+          }
+          callbacks.onStatus?.('Steering agent...');
+          continue;
+        }
+
+        if (!result) break;
+
+        finalResponse = assistantContent || result.content;
+
+        if (!result.toolCalls || result.toolCalls.length === 0) {
+          // Model concluded turn without further tool calls
+          this.messages.push({
+            role: 'assistant',
+            content: finalResponse,
+          });
+
+          // Check if user steered right at the end of turn
+          if (this.steeringQueue.length > 0) {
+            const steerMsgs: string[] = [];
+            while (this.steeringQueue.length > 0) {
+              steerMsgs.push(this.steeringQueue.shift()!);
+            }
+            if (steerMsgs.length > 0) {
+              this.messages.push({ role: 'user', content: steerMsgs.join('\n\n') });
+            }
+            continue;
+          }
+
+          break;
+        }
+
+        // Record assistant message with tool calls
         this.messages.push({
-          role: 'tool',
-          name: tc.name,
-          tool_call_id: tc.id,
-          content: toolMessageContent,
+          role: 'assistant',
+          content: finalResponse,
+          tool_calls: result.toolCalls.map((tc: any) => ({
+            id: tc.id,
+            type: 'function',
+            function: {
+              name: tc.name,
+              arguments: tc.rawArguments,
+            },
+          })),
         });
+
+        // Execute tool calls
+        for (const tc of result.toolCalls) {
+          if (signal?.aborted) break;
+
+          callbacks.onToolStart?.(tc.name, tc.arguments);
+
+          const toolRes = await executeTool(tc.id, tc.name, tc.arguments, {
+            cwd: this.cwd,
+            signal,
+            onOutput: (chunk) => {
+              // live tool streaming if needed
+            },
+          });
+
+          callbacks.onToolEnd?.(tc.name, toolRes.output, toolRes.isError, toolRes.diff);
+
+          let toolMessageContent = toolRes.output;
+          if (!toolRes.isError && (tc.name === 'write' || tc.name === 'edit')) {
+            const targetPath = tc.arguments?.path || '';
+            if (
+              !targetPath.endsWith('AGENTS.md') &&
+              !targetPath.endsWith('CLAUDE.md') &&
+              !targetPath.endsWith('PROJECT.md')
+            ) {
+              toolMessageContent += '\n\n[PROTOCOL REMINDER: You modified project code. You must also update AGENTS.md (under ## 📝 Changelog & Code Modifications) with the details of your changes before completing your task!]';
+            }
+          }
+
+          this.messages.push({
+            role: 'tool',
+            name: tc.name,
+            tool_call_id: tc.id,
+            content: toolMessageContent,
+          });
+        }
+
+        // After tool calls, inject any steering messages queued during tool execution
+        if (this.steeringQueue.length > 0) {
+          const steerMsgs: string[] = [];
+          while (this.steeringQueue.length > 0) {
+            steerMsgs.push(this.steeringQueue.shift()!);
+          }
+          if (steerMsgs.length > 0) {
+            this.messages.push({ role: 'user', content: steerMsgs.join('\n\n') });
+          }
+        }
       }
+    } finally {
+      this.isRunningTurn = false;
+      this.currentStepAbortController = null;
     }
 
     // Auto-sync session to Model Aggregator web app in background

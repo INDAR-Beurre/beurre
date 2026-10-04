@@ -1,7 +1,7 @@
 import { BeurreAgent } from './agent.ts';
 import { compactMessages } from './compact.ts';
 import { formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts';
-import { b, colors, ButterSpinner, BeurreWorkingBar, formatClaudeToolCall, formatClaudeToolResult } from './theme.ts';
+import { b, colors, ButterSpinner, BeurreWorkingBar, formatClaudeToolCall, formatClaudeToolResult, formatUserMessageCard } from './theme.ts';
 
 export interface LoopOptions {
   delayMs?: number;
@@ -42,21 +42,41 @@ export class BeurreLoopRunner {
         const iterHeader = `🧈 ─── [Loop Iteration #${this.currentIteration}] ──────────────────────────────────────────`;
         console.log(`\n${b.gold(iterHeader)}`);
 
-        // Run turn with anchored working prompt bar
-        const workingBar = new BeurreWorkingBar({
-          model: agent.getModel(),
-          effort: agent.getEffort(),
-          cwd: agent.getCwd(),
-        });
-        activeWorkingBar = workingBar;
-        workingBar.start(`Iteration #${this.currentIteration} executing...`);
-
         let hasTokens = false;
         let accumulatedReasoning = '';
         let thinkingRendered = false;
+        let workingBar: BeurreWorkingBar;
+
         const streamHighlighter = new StreamingMarkdownHighlighter({
           onWrite: (chunk) => workingBar.writeAbove(chunk),
         });
+
+        // Run turn with anchored working prompt bar
+        workingBar = new BeurreWorkingBar({
+          model: agent.getModel(),
+          effort: agent.getEffort(),
+          cwd: agent.getCwd(),
+          turns: this.currentIteration,
+          onSteer: (message: string) => {
+            if (hasTokens) {
+              streamHighlighter.flush();
+              workingBar.writeAbove('\n');
+              hasTokens = false;
+            }
+            workingBar.writeAbove(formatUserMessageCard(message));
+            accumulatedReasoning = '';
+            thinkingRendered = false;
+            agent.steer(message);
+          },
+          onCycleEffort: (newEffort: string) => {
+            agent.setEffort(newEffort);
+          },
+          onCancel: () => {
+            this.abortController?.abort();
+          },
+        });
+        activeWorkingBar = workingBar;
+        workingBar.start(`Iteration #${this.currentIteration} executing...`);
 
         const renderThinkingIfNeeded = () => {
           if (accumulatedReasoning && !thinkingRendered) {
@@ -75,7 +95,8 @@ export class BeurreLoopRunner {
                 accumulatedReasoning += reasoning;
                 if (!hasTokens) {
                   const tokenEst = Math.round(accumulatedReasoning.length / 4);
-                  workingBar.setThinking(tokenEst, 0);
+                  const snippet = accumulatedReasoning.trim().replace(/\s+/g, ' ').slice(0, 35);
+                  workingBar.setThinking(tokenEst, 0, snippet);
                 }
               },
               onToken: (tok) => {

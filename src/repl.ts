@@ -628,6 +628,26 @@ export async function startRepl(initialModel?: string): Promise<void> {
       quotaText,
       turns: turnsCount,
       tokens: totalTokensEstimate,
+      onSteer: (message: string) => {
+        if (hasStartedTokenStream) {
+          streamHighlighter.flush();
+          workingBar.writeAbove('\n');
+          hasStartedTokenStream = false;
+        }
+        workingBar.writeAbove(formatUserMessageCard(message));
+        accumulatedReasoning = '';
+        thinkingBlockRendered = false;
+        thinkingStartTime = Date.now();
+        firstTokenTime = 0;
+        streamedTokenCount = 0;
+        agent.steer(message);
+      },
+      onCycleEffort: (newEffort: string) => {
+        agent.setEffort(newEffort);
+      },
+      onCancel: () => {
+        activeAbortController?.abort();
+      },
     });
     activeWorkingBar = workingBar;
     workingBar.start('Whipping up solution...');
@@ -667,7 +687,8 @@ export async function startRepl(initialModel?: string): Promise<void> {
             if (!hasStartedTokenStream) {
               const elapsed = (Date.now() - thinkingStartTime) / 1000;
               const tokenEst = Math.round(accumulatedReasoning.length / 4);
-              workingBar.setThinking(tokenEst, elapsed);
+              const snippet = accumulatedReasoning.trim().replace(/\s+/g, ' ').slice(0, 35);
+              workingBar.setThinking(tokenEst, elapsed, snippet);
             }
           },
           onToken: (tok) => {
@@ -743,6 +764,8 @@ export async function startRepl(initialModel?: string): Promise<void> {
       workingBar.stop();
       if (!activeAbortController.signal.aborted) {
         console.log(renderErrorCard('Relay Gateway / Inference Error', err.message));
+      } else {
+        console.log(`\n${colors.butterMelt}🧈 Turn cancelled by user.${colors.reset}\n`);
       }
     } finally {
       workingBar.stop();

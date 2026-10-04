@@ -7,8 +7,10 @@ import {
   formatClaudeToolResult,
   getGitStatus,
   formatWorkingPromptBar,
+  formatSteeringPromptBar,
   BeurreWorkingBar,
 } from '../src/theme.ts';
+import { BeurreAgent } from '../src/agent.ts';
 
 describe('Butter Theme & Status Rendering', () => {
   it('should render a complete status bar with model and git info', () => {
@@ -183,4 +185,181 @@ describe('Butter Theme & Status Rendering', () => {
     const bottomWidth = stripAnsi(lines[lines.length - 1]).length;
     expect(topWidth).toBe(bottomWidth);
   });
+
+  it('should format interactive steering prompt bar with 5 lines, status above chat bar, and placeholder', () => {
+    const lines = formatSteeringPromptBar({
+      cols: 88,
+      spinnerFrame: '🧈 ⠸',
+      statusText: 'Whipping up solution...',
+      model: 'glm-5-3-flash',
+      effort: 'high',
+      user: 'admin',
+      quotaText: '∞',
+    });
+
+    expect(lines.length).toBe(5);
+    // Line 0: status line ABOVE chat bar
+    expect(lines[0]).toContain('🧈 ⠸');
+    expect(lines[0]).toContain('Whipping up solution...');
+    // Line 1: top divider of chat bar
+    expect(lines[1]).toContain('─');
+    // Line 2: interactive prompt line with placeholder
+    expect(lines[2]).toContain('>');
+    expect(lines[2]).toContain('Type a message to steer agent (Esc to cancel)...');
+    // Line 3: bottom divider of chat bar
+    expect(lines[3]).toContain('─');
+    // Line 4: footer with esc, enter, and shift+tab hints
+    expect(lines[4]).toContain('esc to cancel');
+    expect(lines[4]).toContain('enter to steer');
+    expect(lines[4]).toContain('shift+tab effort');
+    expect(lines[4]).toContain('admin');
+    expect(lines[4]).toContain('GLM 5.3 Flash');
+    expect(lines[4]).toContain('high');
+    expect(lines[4]).toContain('∞');
+  });
+
+  it('should render typed steering message in interactive prompt bar without placeholder', () => {
+    const lines = formatWorkingPromptBar({
+      cols: 80,
+      interactive: true,
+      inputBuffer: 'focus on fixing the compiler errors first',
+      model: 'glm-5-3-flash',
+    });
+
+    expect(lines.length).toBe(5);
+    expect(lines[2]).toContain('>');
+    expect(lines[2]).toContain('focus on fixing the compiler errors first');
+    expect(lines[2]).not.toContain('Type a message to steer agent');
+  });
+
+  it('should guarantee no line in interactive steering prompt bar exceeds cols in narrow terminals', () => {
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+
+    for (const cols of [20, 35, 45, 60, 75, 80, 100]) {
+      const lines = formatSteeringPromptBar({
+        cols,
+        spinnerFrame: '🧈 ⠸',
+        statusText: 'Executing write: src/relay.ts (4.2s)...',
+        inputBuffer: 'please steer away from editing config files and keep current models',
+        model: 'moonshotai/kimi-k3:max',
+        effort: 'xhigh',
+        user: 'alexander-developer',
+        quotaText: '48,291,000 / 50,000,000',
+      });
+
+      expect(lines.length).toBe(5);
+      for (let i = 0; i < 5; i++) {
+        const visualLen = stripAnsi(lines[i]).length;
+        expect(visualLen).toBeLessThanOrEqual(cols);
+      }
+    }
+  });
+
+  it('should handle interactive steering input, Shift+Tab effort cycling, and Esc cancellation in BeurreWorkingBar', () => {
+    let steered = '';
+    let cycledEffort = '';
+    let cancelled = false;
+
+    const bar = new BeurreWorkingBar({
+      model: 'glm-5-3-flash',
+      effort: 'high',
+      onSteer: (msg) => { steered = msg; },
+      onCycleEffort: (eff) => { cycledEffort = eff; },
+      onCancel: () => { cancelled = true; },
+    });
+
+    // Initial state
+    expect(bar.getInputBuffer()).toBe('');
+    expect(bar.getEffort()).toBe('high');
+
+    // Type characters
+    bar.handleInput('s');
+    bar.handleInput('t');
+    bar.handleInput('e');
+    bar.handleInput('e');
+    bar.handleInput('r');
+    expect(bar.getInputBuffer()).toBe('steer');
+
+    // Backspace
+    bar.handleInput('\x7f');
+    expect(bar.getInputBuffer()).toBe('stee');
+
+    // Shift+Tab effort cycle
+    bar.handleInput('\x1b[Z');
+    expect(cycledEffort).toBe('xhigh');
+    expect(bar.getEffort()).toBe('xhigh');
+
+    // Enter to submit steering message
+    bar.handleInput('\r');
+    expect(steered).toBe('stee');
+    expect(bar.getInputBuffer()).toBe(''); // reset after steer
+
+    // Esc to cancel
+    bar.handleInput('\x1b');
+    expect(cancelled).toBe(true);
+
+    bar.stop();
+  });
+
+  it('should queue and inject steering messages into BeurreAgent', () => {
+    const agent = new BeurreAgent({ autoSync: false, model: 'glm-5-3-flash' });
+    expect(agent.getSteeringQueue()).toEqual([]);
+
+    agent.steer('focus on test 3');
+    expect(agent.getSteeringQueue()).toEqual(['focus on test 3']);
+
+    agent.steer('also verify error formatting');
+    expect(agent.getSteeringQueue()).toEqual(['focus on test 3', 'also verify error formatting']);
+  });
+
+  it('should keep getCursorCol strictly bounded within columns across long inputs and narrow terminals', () => {
+    const bar = new BeurreWorkingBar({ model: 'glm-5-3-flash' });
+
+    // Empty buffer starts at column 3 (after '> ')
+    expect(bar.getCursorCol(80)).toBe(3);
+    expect(bar.getCursorCol(40)).toBe(3);
+
+    // Short buffer within width
+    bar.setInputBuffer('hello');
+    expect(bar.getCursorCol(80)).toBe(8); // 3 + 5
+
+    // Very long buffer in narrow terminal (e.g. 100 characters in 40 columns)
+    const longText = 'a'.repeat(100);
+    bar.setInputBuffer(longText);
+
+    for (const cols of [20, 30, 40, 60, 80, 100]) {
+      const col = bar.getCursorCol(cols);
+      expect(col).toBeGreaterThanOrEqual(3);
+      expect(col).toBeLessThanOrEqual(cols);
+    }
+
+    bar.stop();
+  });
+
+  it('should handle bracketed paste input cleanly in BeurreWorkingBar', () => {
+    const bar = new BeurreWorkingBar({ model: 'glm-5-3-flash' });
+
+    // Terminal sends bracketed paste
+    bar.handleInput('\x1b[200~paste this steering command\x1b[201~');
+    expect(bar.getInputBuffer()).toBe('paste this steering command');
+
+    // Multi-line paste gets sanitized into single-line
+    bar.handleInput('\x1b[200~line1\nline2\r\nline3\x1b[201~');
+    expect(bar.getInputBuffer()).toContain('line1 line2 line3');
+
+    bar.stop();
+  });
+
+  it('should format thinking status with optional reasoning snippet matching Claude Code template', () => {
+    const bar = new BeurreWorkingBar({ model: 'glm-5-3-flash' });
+
+    bar.setThinking(140, 2.1, 'Initial hypothesis');
+    expect(bar.getStatusText()).toBe('Thinking (~140 tokens • 2.1s): Initial hypothesis...');
+
+    bar.setThinking(250, 3.5);
+    expect(bar.getStatusText()).toBe('Thinking (~250 tokens • 3.5s)...');
+
+    bar.stop();
+  });
 });
+
