@@ -1,4 +1,7 @@
-// Beurre Theme — Buttery Yellow Aesthetic (ANSI 256 / TrueColor)
+// Beurre Theme — Buttery Yellow Aesthetic (Claude Code / OMP Style)
+import { execSync } from 'node:child_process';
+import path from 'node:path';
+import os from 'node:os';
 
 export const colors = {
   reset: '\x1b[0m',
@@ -14,13 +17,14 @@ export const colors = {
   butterCrust: '\x1b[38;2;217;119;6m',       // #D97706 (Toasted Crust)
   butterPale: '\x1b[38;2;254;240;138m',      // #FEF08A (Light Butter)
 
-  // Accents
+  // Claude Code / Muted accents
   white: '\x1b[38;2;255;255;255m',
   gray: '\x1b[38;2;168;162;158m',
   darkGray: '\x1b[38;2;120;113;108m',
   green: '\x1b[38;2;132;204;22m',            // #84CC16 (Success)
   red: '\x1b[38;2;239;68;68m',               // #EF4444 (Error)
   cyan: '\x1b[38;2;56;189;248m',             // #38BDF8 (Info)
+  mutedBox: '\x1b[38;2;87;83;78m',           // #57534E (Muted borders)
 
   // Backgrounds
   bgButterGold: '\x1b[48;2;250;204;21m\x1b[30m',
@@ -45,12 +49,93 @@ export const b = {
   subagentBadge: (name: string) => `${colors.bgButterMelt}${colors.bold} 🧈 ${name} ${colors.reset}`,
 };
 
-export function banner(version = '1.0.0'): string {
-  const line1 = '🧈 ╭──────────────────────────────────────────────────────────╮';
-  const line2 = `   │  ${colors.bold}${colors.butterGold}B E U R R E${colors.reset}  ${colors.dim}v${version}${colors.reset} — ${colors.butterCream}L'Agent Fondant & Autonome${colors.reset}         │`;
-  const line3 = `   │  ${colors.dim}Model Aggregator • Relay Gateway • Auto-Looping${colors.reset}     │`;
-  const line4 = '   ╰──────────────────────────────────────────────────────────╯';
-  return `\n${colors.butterMelt}${line1}\n${line2}\n${line3}\n${colors.butterMelt}${line4}${colors.reset}\n`;
+export function getGitBranch(cwd: string): string | null {
+  try {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD 2>/dev/null', {
+      cwd,
+      encoding: 'utf-8',
+    }).trim();
+    return branch || null;
+  } catch {
+    return null;
+  }
+}
+
+export function formatShortCwd(cwd: string): string {
+  const home = os.homedir();
+  if (cwd.startsWith(home)) {
+    return '~' + cwd.slice(home.length);
+  }
+  return cwd;
+}
+
+export function claudePromptHeader(model: string, cwd: string): string {
+  const shortPath = formatShortCwd(cwd);
+  const branch = getGitBranch(cwd);
+  const gitInfo = branch ? ` (git: ${branch})` : '';
+  const cols = Math.min(process.stdout.columns || 80, 80);
+
+  const title = ` beurre [${model}] `;
+  const borderLen = Math.max(0, cols - title.length - 3);
+
+  const line1 = `${colors.butterMelt}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterMelt}${'─'.repeat(borderLen)}╮${colors.reset}`;
+  const infoText = `  🧈 ${colors.butterCream}${shortPath}${colors.dim}${gitInfo}${colors.reset}  ${colors.dim}•${colors.reset}  ${colors.dim}type ${colors.butterGold}/menu${colors.dim} for dashboard${colors.reset}`;
+  const line2 = `${colors.butterMelt}│${colors.reset}${infoText}`;
+  const line3 = `${colors.butterMelt}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
+
+  return `\n${line1}\n${line2}\n${line3}\n`;
+}
+
+export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process.cwd()): string {
+  const shortPath = formatShortCwd(cwd);
+  const branch = getGitBranch(cwd);
+  const gitInfo = branch ? ` (git: ${branch})` : '';
+
+  return `
+${colors.butterGold}${colors.bold}🧈 BEURRE${colors.reset} ${colors.dim}v${version} — L'Agent Fondant & Autonome (Claude Code / OMP Style)${colors.reset}
+${colors.dim}─────────────────────────────────────────────────────────────────────────────${colors.reset}
+  ${b.bold('Model:')}      ${b.gold(model)} ${colors.dim}(Relay Gateway • 🧠 reasoning)${colors.reset}
+  ${b.bold('Directory:')}  ${b.cream(shortPath)}${colors.dim}${gitInfo}${colors.reset}
+  ${b.bold('Relay:')}      ${b.cyan('https://relay-gw.pages.dev')} ${colors.green}● LIVE${colors.reset}
+  ${b.bold('Control:')}    Type ${b.gold('/menu')} for options, ${b.gold('/loop')} for prompt loop, ${b.gold('/help')} for commands
+${colors.dim}─────────────────────────────────────────────────────────────────────────────${colors.reset}
+`;
+}
+
+export function formatClaudeToolCall(name: string, args: Record<string, any>): string {
+  let detail = '';
+  switch (name) {
+    case 'bash':
+      detail = b.bold(args.command || '');
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Bash')}(${detail})`;
+    case 'read':
+      detail = `${b.cream(args.path || '')}${args.offset ? `:${args.offset}` : ''}`;
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Read')}(${detail})`;
+    case 'write':
+      detail = b.cream(args.path || '');
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Write')}(${detail})`;
+    case 'edit':
+      detail = b.cream(args.path || '');
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Edit')}(${detail})`;
+    case 'web_search':
+      detail = b.cream(`"${args.query || ''}"`);
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Search')}(${detail})`;
+    case 'subagent_run':
+      detail = `${b.subagentBadge(args.subagent || '')} → ${b.dim(args.task?.slice(0, 50) || '')}`;
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Subagent')}(${detail})`;
+    default:
+      detail = JSON.stringify(args).slice(0, 60);
+      return `${colors.butterMelt}●${colors.reset} ${b.bold(name)}(${b.dim(detail)})`;
+  }
+}
+
+export function formatClaudeToolResult(output: string, isError = false): string {
+  const icon = isError ? colors.red + '❌ ' : colors.green + '└─ ';
+  const firstLine = output.trim().split('\n')[0] || '(empty)';
+  const preview = firstLine.slice(0, 100);
+  const remaining = output.trim().split('\n').length - 1;
+  const more = remaining > 0 ? ` ${colors.dim}(+${remaining} more lines)` : '';
+  return `  ${icon}${colors.dim}${preview}${colors.reset}${more}`;
 }
 
 export function butterBox(title: string, content: string, borderColor = colors.butterMelt): string {

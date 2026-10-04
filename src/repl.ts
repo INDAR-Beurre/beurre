@@ -4,18 +4,53 @@ import { relay } from './relay.ts';
 import { listSubagents, runNamedSubagent } from './subagents.ts';
 import { compactMessages } from './compact.ts';
 import { BeurreLoopRunner } from './loop.ts';
-import { b, colors, banner, ButterSpinner } from './theme.ts';
+import { showMenu } from './menu.ts';
+import {
+  b,
+  colors,
+  banner,
+  ButterSpinner,
+  formatClaudeToolCall,
+  formatClaudeToolResult,
+  formatShortCwd,
+  getGitBranch,
+} from './theme.ts';
+
+import { openModelPicker } from './model-picker.ts';
+import { SLASH_COMMANDS, getPredictiveMatches, formatPredictiveHints } from './predictive.ts';
 
 export async function startRepl(initialModel?: string): Promise<void> {
   const agent = new BeurreAgent({ model: initialModel });
-  console.log(banner('1.0.0'));
-  console.log(`${b.cream('Type')} ${b.gold('/help')} ${b.cream('for commands,')} ${b.gold('/models')} ${b.cream('to browse relay models,')} ${b.gold('/loop <prompt>')} ${b.cream('for continuous loop.')}`);
-  console.log(`${b.dim('Current model:')} ${b.badge(agent.getModel())}\n`);
+  
+  // Render Claude Code / OMP Style Welcome Banner
+  console.log(banner('1.0.0', agent.getModel(), agent.getCwd()));
+
+  const completer = (line: string): [string[], string] => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('/')) {
+      const matches = getPredictiveMatches(trimmed);
+      if (matches.length > 0) {
+        if (matches.length > 1) {
+          process.stdout.write('\n' + formatPredictiveHints(matches) + '\n');
+        }
+        return [matches.map((m) => m.command), line];
+      }
+    }
+    return [SLASH_COMMANDS.map((m) => m.command), line];
+  };
+
+  const getPromptString = () => {
+    const shortCwd = formatShortCwd(agent.getCwd());
+    const branch = getGitBranch(agent.getCwd());
+    const gitTag = branch ? `${colors.dim}(${branch})${colors.reset}` : '';
+    return `${colors.butterGold}🧈 beurre${colors.reset} ${colors.dim}[${agent.getModel()}]${colors.reset} ${colors.butterCream}${shortCwd}${gitTag}${colors.reset}\n${colors.butterMelt}>${colors.reset} `;
+  };
 
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: `${b.gold('🧈 beurre')} ${b.dim(`[${agent.getModel()}]`)} > `,
+    completer,
+    prompt: getPromptString(),
   });
 
   rl.prompt();
@@ -31,46 +66,41 @@ export async function startRepl(initialModel?: string): Promise<void> {
       const [cmd, ...args] = trimmed.split(' ');
       const rest = args.join(' ').trim();
 
-      switch (cmd.toLowerCase()) {
-        case '/help':
-          console.log(`
-${b.gold('🧈 BEURRE COMMANDS')}
-  ${b.gold('/help')}                     Show this guide
-  ${b.gold('/models')}                   Browse live models from Relay Gateway
-  ${b.gold('/providers')}                View live upstream provider health
-  ${b.gold('/model <id>')}               Switch active model
-  ${b.gold('/subagents')}                List native named subagents & model IDs
-  ${b.gold('/subagent <name> <task>')}   Dispatch directly to a named subagent
-  ${b.gold('/loop <prompt>')}            Start continuous prompt repeat loop (indefinite)
-  ${b.gold('/compact')}                  Melt & compact conversation history
-  ${b.gold('/sync')}                     Sync session to Model Aggregator web app
-  ${b.gold('/history')}                  Show current session history stats
-  ${b.gold('/clear')}                    Clear screen
-  ${b.gold('/exit')}, ${b.gold('/quit')}               Exit Beurre
-`);
-          break;
+      // If user typed only '/' or incomplete prefix, show predictive hints
+      if (cmd === '/') {
+        console.log('\n' + formatPredictiveHints(SLASH_COMMANDS) + '\n');
+        rl.prompt();
+        return;
+      }
 
-        case '/models': {
-          const spinner = new ButterSpinner();
-          spinner.start('Fetching live models from Relay Gateway...');
-          try {
-            const models = await relay.fetchLiveModels();
-            spinner.stop();
-            console.log(`\n${b.gold('🧈 LIVE RELAY MODELS')} (${models.length} available):\n`);
-            for (const m of models.slice(0, 30)) {
-              const tags = [];
-              if (m.reasoning) tags.push('🧠 reasoning');
-              if (m.context_length) tags.push(`${Math.round(m.context_length / 1000)}k ctx`);
-              if (m.owned_by) tags.push(`by: ${m.owned_by}`);
-              console.log(`  • ${b.bold(m.id.padEnd(28))} ${b.dim(tags.join(' | '))}`);
-            }
-            if (models.length > 30) {
-              console.log(`  ${b.dim(`... and ${models.length - 30} more models`)}`);
-            }
-          } catch (err: any) {
-            spinner.stop();
-            console.error(`${b.red('Error:')} ${err.message}`);
+      switch (cmd.toLowerCase()) {
+        case '/menu': {
+          rl.pause();
+          await showMenu(agent, rl);
+          rl.setPrompt(getPromptString());
+          rl.resume();
+          break;
+        }
+
+        case '/models':
+        case '/model': {
+          if (!rest) {
+            rl.pause();
+            await openModelPicker(agent.getModel(), (newModel) => {
+              agent.setModel(newModel);
+            });
+            rl.setPrompt(getPromptString());
+            rl.resume();
+          } else {
+            agent.setModel(rest);
+            console.log(`${b.green('🧈 Model switched to:')} ${b.gold(rest)}`);
+            rl.setPrompt(getPromptString());
           }
+          break;
+        }
+
+        case '/help': {
+          console.log('\n' + formatPredictiveHints(SLASH_COMMANDS) + '\n');
           break;
         }
 
@@ -88,17 +118,6 @@ ${b.gold('🧈 BEURRE COMMANDS')}
           } catch (err: any) {
             spinner.stop();
             console.error(`${b.red('Error:')} ${err.message}`);
-          }
-          break;
-        }
-
-        case '/model': {
-          if (!rest) {
-            console.log(`${b.cream('Current model:')} ${b.gold(agent.getModel())}`);
-          } else {
-            agent.setModel(rest);
-            console.log(`${b.green('🧈 Model switched to:')} ${b.gold(rest)}`);
-            rl.setPrompt(`${b.gold('🧈 beurre')} ${b.dim(`[${agent.getModel()}]`)} > `);
           }
           break;
         }
@@ -184,17 +203,17 @@ ${b.gold('🧈 BEURRE COMMANDS')}
 
         case '/clear':
           console.clear();
-          console.log(banner('1.0.0'));
+          console.log(banner('1.0.0', agent.getModel(), agent.getCwd()));
           break;
 
         case '/exit':
         case '/quit':
-          console.log(`${b.melt('🧈 Au revoir!')}`);
+          console.log(`\n${b.melt('🧈 Au revoir!')}\n`);
           process.exit(0);
           break;
 
         default:
-          console.log(`${b.red('Unknown command:')} ${cmd}. Type ${b.gold('/help')} for commands.`);
+          console.log(`${b.red('Unknown command:')} ${cmd}. Type ${b.gold('/menu')} or ${b.gold('/help')} for options.`);
       }
 
       console.log();
@@ -202,7 +221,7 @@ ${b.gold('🧈 BEURRE COMMANDS')}
       return;
     }
 
-    // Normal prompt turn
+    // Claude Code / OMP Style Execution Turn
     const spinner = new ButterSpinner();
     spinner.start('Thinking...');
     let hasOutput = false;
@@ -215,7 +234,7 @@ ${b.gold('🧈 BEURRE COMMANDS')}
           if (!hasOutput) {
             spinner.stop();
             hasOutput = true;
-            process.stdout.write(`${b.gold('🧈')} `);
+            process.stdout.write(`\n`);
           }
           process.stdout.write(tok);
         },
@@ -232,14 +251,12 @@ ${b.gold('🧈 BEURRE COMMANDS')}
             hasOutput = false;
           }
           spinner.stop();
-          console.log(`${b.crust(' 🛠️  Tool:')} ${b.bold(name)} ${b.dim(JSON.stringify(args).slice(0, 100))}`);
+          console.log(`\n${formatClaudeToolCall(name, args)}`);
           spinner.start(`Executing ${name}...`);
         },
         onToolEnd: (name, output, isError) => {
           spinner.stop();
-          const icon = isError ? '❌' : '✅';
-          const preview = output.replace(/\n/g, ' ').slice(0, 120);
-          console.log(`   ${icon} ${b.dim(preview)}${output.length > 120 ? '...' : ''}`);
+          console.log(formatClaudeToolResult(output, isError));
         },
       });
     } catch (err: any) {
@@ -254,11 +271,12 @@ ${b.gold('🧈 BEURRE COMMANDS')}
     }
 
     console.log();
+    rl.setPrompt(getPromptString());
     rl.prompt();
   });
 
   rl.on('close', () => {
-    console.log(`\n${b.melt('🧈 Au revoir!')}`);
+    console.log(`\n${b.melt('🧈 Au revoir!')}\n`);
     process.exit(0);
   });
 }

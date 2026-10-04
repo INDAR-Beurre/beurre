@@ -3,7 +3,14 @@ import { BeurreAgent } from './agent.ts';
 import { BeurreLoopRunner } from './loop.ts';
 import { relay } from './relay.ts';
 import { listSubagents } from './subagents.ts';
-import { b, colors, banner, ButterSpinner } from './theme.ts';
+import {
+  b,
+  colors,
+  banner,
+  ButterSpinner,
+  formatClaudeToolCall,
+  formatClaudeToolResult,
+} from './theme.ts';
 
 function printHelp(): void {
   console.log(`
@@ -177,14 +184,12 @@ async function main(): Promise<void> {
             hasTokens = false;
           }
           spinner.stop();
-          console.log(`${b.crust(' 🛠️  Tool:')} ${b.bold(name)} ${b.dim(JSON.stringify(args).slice(0, 100))}`);
+          console.log(`\n${formatClaudeToolCall(name, args)}`);
           spinner.start(`Executing ${name}...`);
         },
         onToolEnd: (name, output, isError) => {
           spinner.stop();
-          const icon = isError ? '❌' : '✅';
-          const preview = output.replace(/\n/g, ' ').slice(0, 120);
-          console.log(`   ${icon} ${b.dim(preview)}${output.length > 120 ? '...' : ''}`);
+          console.log(formatClaudeToolResult(output, isError));
         },
       });
     } catch (err: any) {

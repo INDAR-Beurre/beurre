@@ -20,12 +20,12 @@ describe('RelayClient & Config Auth', () => {
     const first = models[0];
     expect(first.id).toBeDefined();
     expect(typeof first.id).toBe('string');
-  });
+  }, 15000);
 
   it('should fetch providers from Relay Gateway', async () => {
     const providers = await relay.fetchProviders();
     expect(Array.isArray(providers)).toBe(true);
     expect(providers.length).toBeGreaterThan(0);
     expect(providers[0].name).toBeDefined();
-  });
+  }, 15000);
 });
