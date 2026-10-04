@@ -1,0 +1,27 @@
+{
+  "name": "beurre",
+  "version": "1.0.0",
+  "description": "🧈 Beurre — A buttery-smooth, minimalist agentic CLI harness integrated with Model Aggregator & Relay",
+  "main": "src/index.ts",
+  "bin": {
+    "beurre": "./bin/beurre"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "link": "mkdir -p ~/.bun/bin ~/.local/bin && ln -sf $(pwd)/bin/beurre ~/.bun/bin/beurre && ln -sf $(pwd)/bin/beurre ~/.local/bin/beurre"
+  },
+  "keywords": [
+    "agent",
+    "cli",
+    "butter",
+    "beurre",
+    "relay",
+    "model-aggregator",
+    "autonomous",
+    "loop"
+  ],
+  "author": "alex",
+  "license": "MIT"
+}
