@@ -17,6 +17,7 @@ import {
   banner,
   statusBar,
   ButterSpinner,
+  BeurreWorkingBar,
   formatClaudeToolCall,
   formatClaudeToolResult,
   formatUserMessageCard,
@@ -94,10 +95,15 @@ export async function startRepl(initialModel?: string): Promise<void> {
     return num.toString();
   };
 
+  let activeWorkingBar: BeurreWorkingBar | null = null;
+
   // Graceful interrupt handling for active turns
   const onSigInt = () => {
     if (activeAbortController) {
       activeAbortController.abort();
+      if (activeWorkingBar) {
+        activeWorkingBar.stop();
+      }
       console.log(`\n${colors.butterMelt}🧈 Turn interrupted by user.${colors.reset}\n`);
     }
   };
@@ -614,8 +620,17 @@ export async function startRepl(initialModel?: string): Promise<void> {
     console.log(formatUserMessageCard(trimmed));
 
     activeAbortController = new AbortController();
-    const spinner = new ButterSpinner();
-    spinner.start('Whipping up solution...');
+    const workingBar = new BeurreWorkingBar({
+      model: agent.getModel(),
+      effort: agent.getEffort(),
+      cwd: agent.getCwd(),
+      user: currentUser.name,
+      quotaText,
+      turns: turnsCount,
+      tokens: totalTokensEstimate,
+    });
+    activeWorkingBar = workingBar;
+    workingBar.start('Whipping up solution...');
 
     let accumulatedResponse = '';
     let accumulatedReasoning = '';
@@ -626,14 +641,16 @@ export async function startRepl(initialModel?: string): Promise<void> {
     let streamedTokenCount = 0;
     let toolStartTime = 0;
 
-    const streamHighlighter = new StreamingMarkdownHighlighter();
+    const streamHighlighter = new StreamingMarkdownHighlighter({
+      onWrite: (chunk) => workingBar.writeAbove(chunk),
+    });
 
     const renderThinkingIfNeeded = () => {
       if (accumulatedReasoning && !thinkingBlockRendered && thinkingMode !== 'hidden') {
-        spinner.stop();
         const isCollapsed = thinkingMode === 'collapsed';
         const elapsed = ((Date.now() - thinkingStartTime) / 1000).toFixed(1) + 's';
-        console.log('\n' + formatThinkingBlock(accumulatedReasoning, isCollapsed, undefined, elapsed));
+        const block = formatThinkingBlock(accumulatedReasoning, isCollapsed, undefined, elapsed);
+        workingBar.writeAbove('\n' + block + '\n');
         thinkingBlockRendered = true;
         lastReasoning = accumulatedReasoning;
       }
@@ -643,14 +660,14 @@ export async function startRepl(initialModel?: string): Promise<void> {
       await agent.runTurn(
         trimmed,
         {
-          onStatus: (st) => spinner.update(st),
+          onStatus: (st) => workingBar.update(st),
           onReasoning: (res) => {
             accumulatedReasoning += res;
             lastReasoning = accumulatedReasoning;
             if (!hasStartedTokenStream) {
-              const elapsed = ((Date.now() - thinkingStartTime) / 1000).toFixed(1);
+              const elapsed = (Date.now() - thinkingStartTime) / 1000;
               const tokenEst = Math.round(accumulatedReasoning.length / 4);
-              spinner.update(`Thinking (~${tokenEst} tokens • ${elapsed}s)...`);
+              workingBar.setThinking(tokenEst, elapsed);
             }
           },
           onToken: (tok) => {
@@ -659,34 +676,35 @@ export async function startRepl(initialModel?: string): Promise<void> {
             }
             streamedTokenCount++;
             if (!hasStartedTokenStream) {
-              spinner.stop();
               renderThinkingIfNeeded();
               hasStartedTokenStream = true;
-              process.stdout.write(formatAgentHeader(agent.getModel(), agent.getEffort()));
+              workingBar.writeAbove(formatAgentHeader(agent.getModel(), agent.getEffort()));
             }
             accumulatedResponse += tok;
+            const durationSec = (Date.now() - firstTokenTime) / 1000;
+            const tokPerSec = durationSec > 0 ? (streamedTokenCount / durationSec) : 0;
+            workingBar.setGenerating(streamedTokenCount, tokPerSec, durationSec);
             streamHighlighter.feed(tok);
           },
           onToolStart: (name, args) => {
             if (hasStartedTokenStream) {
               streamHighlighter.flush();
-              console.log();
+              workingBar.writeAbove('\n');
               hasStartedTokenStream = false;
             }
-            spinner.stop();
             renderThinkingIfNeeded();
             toolStartTime = Date.now();
-            console.log(`\n${formatClaudeToolCall(name, args)}`);
-            spinner.start(`Executing ${name}...`);
+            workingBar.writeAbove(`\n${formatClaudeToolCall(name, args)}\n`);
+            workingBar.setTool(name, args);
           },
           onToolEnd: (name, output, isError, diff) => {
             const elapsedMs = toolStartTime > 0 ? Date.now() - toolStartTime : 0;
-            spinner.stop();
             if (diff) {
-              console.log('\n' + diff);
+              workingBar.writeAbove('\n' + diff + '\n');
             } else {
-              console.log(formatClaudeToolResult(output, isError, elapsedMs));
+              workingBar.writeAbove(formatClaudeToolResult(output, isError, elapsedMs) + '\n');
             }
+            workingBar.update('Whipping up solution...');
           },
         },
         activeAbortController.signal
@@ -711,6 +729,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
       if (hasStartedTokenStream) {
         streamHighlighter.flush();
+        workingBar.stop();
         const durationSec = firstTokenTime > 0 ? (Date.now() - firstTokenTime) / 1000 : 0;
         const tokPerSec = durationSec > 0 ? (streamedTokenCount / durationSec) : 0;
         const speedBadge = durationSec > 0
@@ -718,15 +737,17 @@ export async function startRepl(initialModel?: string): Promise<void> {
           : '';
         console.log(`\n${speedBadge}\n`);
       } else {
-        spinner.stop();
+        workingBar.stop();
       }
     } catch (err: any) {
-      spinner.stop();
+      workingBar.stop();
       if (!activeAbortController.signal.aborted) {
         console.log(renderErrorCard('Relay Gateway / Inference Error', err.message));
       }
     } finally {
+      workingBar.stop();
       activeAbortController = null;
+      activeWorkingBar = null;
     }
   }
 }

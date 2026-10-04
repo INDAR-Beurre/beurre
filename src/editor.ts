@@ -657,20 +657,65 @@ export class BeurreEditor {
 
           drawnLines.push(`${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`);
 
-          // Bottom status line
-          const leftStatus = `${colors.dim}esc to cancel  •  tab complete  •  shift+tab effort${colors.reset}`;
+          // Bottom status line with responsive compaction
+          let leftStatus = `${colors.dim}esc to cancel  •  tab complete  •  shift+tab effort${colors.reset}`;
           const modelName = options.model ? getModelDisplayName(options.model) : 'Beurre';
           const effortTag = currentEffort.toLowerCase();
           const quotaTag = options.quotaText ? `${colors.cyan}${options.quotaText}${colors.reset}` : '';
           const userTag = options.user ? `${colors.butterCream}${options.user}${colors.reset}` : '';
 
-          const rightParts = [userTag, modelName, effortTag, quotaTag].filter(Boolean);
-          const rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+          let rightParts = [userTag, modelName, effortTag, quotaTag].filter(Boolean);
+          let rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
 
-          const leftLen = stripAnsi(leftStatus).length;
-          const rightLen = stripAnsi(rightStatus).length;
-          const padStatus = Math.max(2, cols - leftLen - rightLen);
-          drawnLines.push(`${leftStatus}${' '.repeat(padStatus)}${rightStatus}`);
+          let leftLen = stripAnsi(leftStatus).length;
+          let rightLen = stripAnsi(rightStatus).length;
+
+          if (leftLen + rightLen + 2 > cols) {
+            leftStatus = `${colors.dim}esc cancel  •  tab  •  shift+tab effort${colors.reset}`;
+            leftLen = stripAnsi(leftStatus).length;
+          }
+
+          if (leftLen + rightLen + 2 > cols) {
+            rightParts = [modelName, effortTag, quotaTag].filter(Boolean);
+            rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+            rightLen = stripAnsi(rightStatus).length;
+          }
+
+          if (leftLen + rightLen + 2 > cols) {
+            leftStatus = `${colors.dim}esc cancel  •  tab${colors.reset}`;
+            leftLen = stripAnsi(leftStatus).length;
+          }
+
+          if (leftLen + rightLen + 2 > cols) {
+            rightParts = [modelName, effortTag].filter(Boolean);
+            rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+            rightLen = stripAnsi(rightStatus).length;
+          }
+
+          if (leftLen + rightLen + 2 > cols) {
+            leftStatus = `${colors.dim}esc cancel${colors.reset}`;
+            leftLen = stripAnsi(leftStatus).length;
+          }
+
+          if (leftLen + rightLen + 2 > cols) {
+            rightParts = [modelName];
+            rightStatus = rightParts.join('');
+            rightLen = stripAnsi(rightStatus).length;
+          }
+
+          if (leftLen + rightLen + 2 > cols) {
+            const maxModelLen = Math.max(3, cols - leftLen - 3);
+            const shortModel = modelName.length > maxModelLen ? modelName.slice(0, maxModelLen - 1) + '…' : modelName;
+            rightStatus = shortModel;
+            rightLen = stripAnsi(rightStatus).length;
+          }
+
+          const padStatus = Math.max(1, cols - leftLen - rightLen);
+          let footerLine = `${leftStatus}${' '.repeat(padStatus)}${rightStatus}`;
+          if (stripAnsi(footerLine).length > cols) {
+            footerLine = footerLine.slice(0, cols);
+          }
+          drawnLines.push(footerLine);
 
           targetRow = 1;
           targetCol = 3 + coords.colIdx;

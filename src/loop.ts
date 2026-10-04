@@ -1,7 +1,7 @@
 import { BeurreAgent } from './agent.ts';
 import { compactMessages } from './compact.ts';
 import { formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts';
-import { b, colors, ButterSpinner, formatClaudeToolCall, formatClaudeToolResult } from './theme.ts';
+import { b, colors, ButterSpinner, BeurreWorkingBar, formatClaudeToolCall, formatClaudeToolResult } from './theme.ts';
 
 export interface LoopOptions {
   delayMs?: number;
@@ -21,9 +21,10 @@ export class BeurreLoopRunner {
     this.currentIteration = 0;
     this.abortController = new AbortController();
 
-    const spinner = new ButterSpinner();
+    let activeWorkingBar: BeurreWorkingBar | null = null;
 
     const onSigInt = () => {
+      activeWorkingBar?.stop();
       console.log(`\n${b.melt('🧈')} ${b.gold('Loop interrupted by user (Ctrl+C). Saving butter state and stopping...')}`);
       this.stop();
     };
@@ -41,17 +42,26 @@ export class BeurreLoopRunner {
         const iterHeader = `🧈 ─── [Loop Iteration #${this.currentIteration}] ──────────────────────────────────────────`;
         console.log(`\n${b.gold(iterHeader)}`);
 
-        // Run turn
-        spinner.start(`Iteration #${this.currentIteration} executing...`);
+        // Run turn with anchored working prompt bar
+        const workingBar = new BeurreWorkingBar({
+          model: agent.getModel(),
+          effort: agent.getEffort(),
+          cwd: agent.getCwd(),
+        });
+        activeWorkingBar = workingBar;
+        workingBar.start(`Iteration #${this.currentIteration} executing...`);
+
         let hasTokens = false;
         let accumulatedReasoning = '';
         let thinkingRendered = false;
-        const streamHighlighter = new StreamingMarkdownHighlighter();
+        const streamHighlighter = new StreamingMarkdownHighlighter({
+          onWrite: (chunk) => workingBar.writeAbove(chunk),
+        });
 
         const renderThinkingIfNeeded = () => {
           if (accumulatedReasoning && !thinkingRendered) {
-            spinner.stop();
-            console.log('\n' + formatThinkingBlock(accumulatedReasoning));
+            const block = formatThinkingBlock(accumulatedReasoning);
+            workingBar.writeAbove('\n' + block + '\n');
             thinkingRendered = true;
           }
         };
@@ -60,47 +70,45 @@ export class BeurreLoopRunner {
           await agent.runTurn(
             prompt,
             {
-              onStatus: (st) => spinner.update(st),
+              onStatus: (st) => workingBar.update(st),
               onReasoning: (reasoning) => {
                 accumulatedReasoning += reasoning;
                 if (!hasTokens) {
-                  const snippet = accumulatedReasoning.slice(-30).trim();
-                  spinner.update(`Thinking (${snippet})...`);
+                  const tokenEst = Math.round(accumulatedReasoning.length / 4);
+                  workingBar.setThinking(tokenEst, 0);
                 }
               },
               onToken: (tok) => {
                 if (!hasTokens) {
-                  spinner.stop();
                   renderThinkingIfNeeded();
                   hasTokens = true;
-                  process.stdout.write(`\n${b.gold('🧈')} `);
+                  workingBar.writeAbove(`\n${b.gold('🧈')} `);
                 }
                 streamHighlighter.feed(tok);
               },
               onToolStart: (name, args) => {
                 if (hasTokens) {
                   streamHighlighter.flush();
-                  console.log();
+                  workingBar.writeAbove('\n');
                   hasTokens = false;
                 }
-                spinner.stop();
                 renderThinkingIfNeeded();
-                console.log(`\n${formatClaudeToolCall(name, args)}`);
-                spinner.start(`Executing ${name}...`);
+                workingBar.writeAbove(`\n${formatClaudeToolCall(name, args)}\n`);
+                workingBar.setTool(name, args);
               },
               onToolEnd: (name, output, isError, diff) => {
-                spinner.stop();
                 if (diff) {
-                  console.log('\n' + diff);
+                  workingBar.writeAbove('\n' + diff + '\n');
                 } else {
-                  console.log(formatClaudeToolResult(output, isError));
+                  workingBar.writeAbove(formatClaudeToolResult(output, isError) + '\n');
                 }
+                workingBar.update(`Iteration #${this.currentIteration} executing...`);
               },
             },
             this.abortController.signal
           );
         } catch (err: any) {
-          spinner.stop();
+          workingBar.stop();
           if (this.abortController.signal.aborted) break;
           console.error(`\n${b.red('Error in loop turn:')} ${err.message}`);
         }
@@ -108,10 +116,12 @@ export class BeurreLoopRunner {
         renderThinkingIfNeeded();
         if (hasTokens) {
           streamHighlighter.flush();
+          workingBar.stop();
           console.log();
         } else {
-          spinner.stop();
+          workingBar.stop();
         }
+        activeWorkingBar = null;
 
         console.log(`\n${b.green('🧈 Iteration #' + this.currentIteration + ' finished.')}`);
 

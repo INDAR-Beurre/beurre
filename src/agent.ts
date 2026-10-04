@@ -91,7 +91,13 @@ Guidelines:
 - Use "edit" with unique target blocks for safe modifications.
 - Test your changes using "bash" before concluding.
 - Delegate complex subproblems to named subagents using "subagent_run" with their specific model capabilities.
-- Be concise, direct, and pragmatic.`;
+- Be concise, direct, and pragmatic.
+
+CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
+- AGENTS.md at the project root is the living source of truth for all AI models & coding agents working on Beurre.
+- WHENEVER you make any code modifications, bug fixes, feature additions, or architectural changes to the codebase, YOU MUST ALSO UPDATE/APPEND that change information to AGENTS.md (under the "## 📝 Changelog & Code Modifications" section).
+- Record the exact files touched, the substance and rationale of the changes, and verification test outcomes.
+- This ensures all future models, tools, and subagents reading AGENTS.md will instantly know what changes were made and how the codebase currently works!`;
 
     this.messages.push({ role: 'system', content: systemPrompt });
   }
@@ -215,11 +221,23 @@ Guidelines:
 
         callbacks.onToolEnd?.(tc.name, toolRes.output, toolRes.isError, toolRes.diff);
 
+        let toolMessageContent = toolRes.output;
+        if (!toolRes.isError && (tc.name === 'write' || tc.name === 'edit')) {
+          const targetPath = tc.arguments?.path || '';
+          if (
+            !targetPath.endsWith('AGENTS.md') &&
+            !targetPath.endsWith('CLAUDE.md') &&
+            !targetPath.endsWith('PROJECT.md')
+          ) {
+            toolMessageContent += '\n\n[PROTOCOL REMINDER: You modified project code. You must also update AGENTS.md (under ## 📝 Changelog & Code Modifications) with the details of your changes before completing your task!]';
+          }
+        }
+
         this.messages.push({
           role: 'tool',
           name: tc.name,
           tool_call_id: tc.id,
-          content: toolRes.output,
+          content: toolMessageContent,
         });
       }
     }

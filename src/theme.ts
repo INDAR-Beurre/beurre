@@ -230,7 +230,7 @@ export function statusBar(options: StatusBarOptions): string {
 export function renderErrorCard(title: string, message: string): string {
   const cols = Math.min(process.stdout.columns || 80, 80);
   const header = ` ⚠️ ${title} `;
-  const borderLen = Math.max(0, cols - header.length - 3);
+  const borderLen = Math.max(0, cols - header.length - 4);
 
   const top = `${colors.red}╭──${colors.bold}${header}${colors.reset}${colors.red}${'─'.repeat(borderLen)}╮${colors.reset}`;
   const bottom = `${colors.red}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
@@ -385,6 +385,410 @@ export class ButterSpinner {
 
   private render() {
     if (!this.isTTY) return;
-    process.stdout.write(`\r\x1b[K${colors.butterGold}${this.frames[this.idx]}${colors.reset} ${colors.butterCream}${this.message}${colors.reset}`);
+    const cleanMsg = this.message.replace(/^🧈\s*/, '');
+    process.stdout.write(`\r\x1b[K${colors.butterGold}${this.frames[this.idx]}${colors.reset} ${colors.butterCream}${cleanMsg}${colors.reset}`);
   }
 }
+
+export interface WorkingBarRenderOptions {
+  cols?: number;
+  spinnerFrame?: string;
+  statusText?: string;
+  model?: string;
+  effort?: string;
+  user?: string;
+  quotaText?: string;
+  cwd?: string;
+  turns?: number;
+  tokens?: number;
+}
+
+export function formatWorkingPromptBar(options: WorkingBarRenderOptions = {}): string[] {
+  const terminalCols = options.cols || (process.stdout.columns || 80);
+  const cols = Math.max(20, Math.min(terminalCols, 100));
+  const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
+
+  const line0 = `${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`;
+
+  // Line 1: spinner + active status
+  const frame = options.spinnerFrame || `${colors.butterGold}🧈 ⠋${colors.reset}`;
+  const rawStatus = options.statusText || 'Whipping up solution...';
+  const cleanStatus = rawStatus.replace(/^🧈\s*/, '');
+  const prefix = `${frame} ${colors.butterCream}`;
+  const suffix = `${colors.reset}`;
+  const prefixLen = stripAnsi(prefix).length;
+  const maxStatusLen = Math.max(1, cols - prefixLen - 2);
+
+  let displayedStatus = cleanStatus;
+  if (stripAnsi(displayedStatus).length > maxStatusLen) {
+    displayedStatus = displayedStatus.slice(0, Math.max(0, maxStatusLen - 1)) + '…';
+  }
+  let line1 = `${prefix}${displayedStatus}${suffix}`;
+  while (stripAnsi(line1).length > cols && displayedStatus.length > 1) {
+    displayedStatus = displayedStatus.slice(0, -2) + '…';
+    line1 = `${prefix}${displayedStatus}${suffix}`;
+  }
+
+  const line2 = `${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`;
+
+  // Line 3: status footer with responsive compaction to never wrap
+  let leftStatus = `${colors.dim}esc to interrupt  •  ctrl+c cancel${colors.reset}`;
+  const modelName = options.model ? getModelDisplayName(options.model) : 'Beurre';
+  const effortTag = options.effort ? options.effort.toLowerCase() : 'high';
+  const quotaTag = options.quotaText ? `${colors.cyan}${options.quotaText}${colors.reset}` : '';
+  const userTag = options.user ? `${colors.butterCream}${options.user}${colors.reset}` : '';
+
+  let rightParts = [userTag, modelName, effortTag, quotaTag].filter(Boolean);
+  let rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+
+  let leftLen = stripAnsi(leftStatus).length;
+  let rightLen = stripAnsi(rightStatus).length;
+
+  if (leftLen + rightLen + 2 > cols) {
+    leftStatus = `${colors.dim}esc interrupt  •  ctrl+c${colors.reset}`;
+    leftLen = stripAnsi(leftStatus).length;
+  }
+
+  if (leftLen + rightLen + 2 > cols) {
+    rightParts = [modelName, effortTag, quotaTag].filter(Boolean);
+    rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+    rightLen = stripAnsi(rightStatus).length;
+  }
+
+  if (leftLen + rightLen + 2 > cols) {
+    rightParts = [modelName, effortTag].filter(Boolean);
+    rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
+    rightLen = stripAnsi(rightStatus).length;
+  }
+
+  if (leftLen + rightLen + 2 > cols) {
+    leftStatus = `${colors.dim}esc interrupt${colors.reset}`;
+    leftLen = stripAnsi(leftStatus).length;
+  }
+
+  if (leftLen + rightLen + 2 > cols) {
+    rightParts = [modelName];
+    rightStatus = rightParts.join('');
+    rightLen = stripAnsi(rightStatus).length;
+  }
+
+  if (leftLen + rightLen + 2 > cols) {
+    const maxModelLen = Math.max(3, cols - leftLen - 3);
+    const shortModel = modelName.length > maxModelLen ? modelName.slice(0, maxModelLen - 1) + '…' : modelName;
+    rightStatus = shortModel;
+    rightLen = stripAnsi(rightStatus).length;
+  }
+
+  const padStatus = Math.max(1, cols - leftLen - rightLen);
+  let line3 = `${leftStatus}${' '.repeat(padStatus)}${rightStatus}`;
+
+  if (stripAnsi(line3).length > cols) {
+    line3 = line3.slice(0, cols);
+  }
+
+  return [line0, line1, line2, line3];
+}
+
+export class BeurreWorkingBar {
+  private frames = ['🧈 ⠋', '🧈 ⠙', '🧈 ⠹', '🧈 ⠸', '🧈 ⠼', '🧈 ⠴', '🧈 ⠦', '🧈 ⠧', '🧈 ⠇', '🧈 ⠏'];
+  private rawGlyphs = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  private spinnerIdx = 0;
+  private timer: Timer | null = null;
+  private isTTY = Boolean(process.stdout.isTTY);
+  private barDrawn = false;
+  private statusText = 'Whipping up solution...';
+  private customIcon = '';
+  private options: WorkingBarRenderOptions = {};
+  private tokenBuffer = '';
+  private lastFlushTime = 0;
+  private onResizeBound: () => void;
+
+  // Active phase tracking for live dynamic progression
+  private currentPhase: 'idle' | 'status' | 'thinking' | 'generating' | 'tool' = 'status';
+  private phaseStartTime = 0;
+  private phaseDetail = '';
+  private phaseTokens = 0;
+  private phaseTokPerSec = 0;
+
+  constructor(options: WorkingBarRenderOptions = {}) {
+    this.options = { ...options };
+    this.onResizeBound = () => this.handleResize();
+  }
+
+  isDrawn(): boolean {
+    return this.barDrawn;
+  }
+
+  getStatusText(): string {
+    return this.statusText;
+  }
+
+  start(initialStatus = 'Whipping up solution...'): void {
+    this.statusText = initialStatus.replace(/^🧈\s*/, '');
+    this.currentPhase = 'status';
+    this.phaseStartTime = Date.now();
+    this.phaseDetail = '';
+    this.customIcon = '';
+    this.spinnerIdx = 0;
+    this.barDrawn = false;
+    this.tokenBuffer = '';
+    this.lastFlushTime = Date.now();
+
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+
+    if (!this.isTTY) return;
+
+    process.stdout.write('\x1b[?25l'); // Hide cursor
+    this.renderInitialBar();
+
+    if (process.stdout.on) {
+      process.stdout.on('resize', this.onResizeBound);
+    }
+
+    this.timer = setInterval(() => {
+      this.spinnerIdx = (this.spinnerIdx + 1) % this.frames.length;
+
+      // Update dynamic live time for ongoing phases
+      if (this.currentPhase === 'tool' && this.phaseDetail && this.phaseStartTime > 0) {
+        const elapsed = (Date.now() - this.phaseStartTime) / 1000;
+        if (elapsed >= 0.1) {
+          this.statusText = `Executing ${this.phaseDetail} (${elapsed.toFixed(1)}s)...`;
+        }
+      } else if (this.currentPhase === 'thinking' && this.phaseStartTime > 0) {
+        const elapsed = (Date.now() - this.phaseStartTime) / 1000;
+        this.statusText = `Thinking (~${this.phaseTokens} tokens • ${elapsed.toFixed(1)}s)...`;
+      } else if (this.currentPhase === 'generating' && this.phaseStartTime > 0) {
+        const elapsed = (Date.now() - this.phaseStartTime) / 1000;
+        const speed = this.phaseTokPerSec > 0
+          ? `${this.phaseTokPerSec.toFixed(1)} tok/s • `
+          : (elapsed > 0 && this.phaseTokens > 0 ? `${(this.phaseTokens / elapsed).toFixed(1)} tok/s • ` : '');
+        this.statusText = `Generating (~${this.phaseTokens} tokens • ${speed}${elapsed.toFixed(1)}s)...`;
+      }
+
+      if (this.tokenBuffer.length > 0) {
+        this.flushTokens();
+      } else {
+        this.updateLineInPlace();
+      }
+    }, 80);
+  }
+
+  update(status: string, icon?: string): void {
+    this.currentPhase = 'status';
+    this.phaseStartTime = Date.now();
+    this.phaseDetail = '';
+    this.statusText = status.replace(/^🧈\s*/, '');
+    if (icon !== undefined) {
+      this.customIcon = icon;
+    } else {
+      this.customIcon = '';
+    }
+    if (this.isTTY && this.barDrawn) {
+      this.updateLineInPlace();
+    }
+  }
+
+  setThinking(tokens: number, elapsedSec?: number): void {
+    this.currentPhase = 'thinking';
+    this.customIcon = '🧠';
+    this.phaseTokens = tokens;
+    if (elapsedSec !== undefined && elapsedSec > 0) {
+      this.phaseStartTime = Date.now() - Math.round(elapsedSec * 1000);
+      this.statusText = `Thinking (~${tokens} tokens • ${elapsedSec.toFixed(1)}s)...`;
+    } else {
+      if (this.phaseStartTime === 0) {
+        this.phaseStartTime = Date.now();
+      }
+      const elapsed = Math.max(0, (Date.now() - this.phaseStartTime) / 1000);
+      this.statusText = `Thinking (~${tokens} tokens • ${elapsed.toFixed(1)}s)...`;
+    }
+    if (this.isTTY && this.barDrawn) {
+      this.updateLineInPlace();
+    }
+  }
+
+  setGenerating(tokens: number, tokPerSec?: number, elapsedSec?: number): void {
+    this.currentPhase = 'generating';
+    this.customIcon = '';
+    this.phaseTokens = tokens;
+    if (elapsedSec !== undefined && elapsedSec > 0) {
+      this.phaseStartTime = Date.now() - Math.round(elapsedSec * 1000);
+    } else if (this.phaseStartTime === 0) {
+      this.phaseStartTime = Date.now();
+    }
+    const elapsed = elapsedSec !== undefined && elapsedSec > 0
+      ? elapsedSec
+      : Math.max(0, (Date.now() - this.phaseStartTime) / 1000);
+    const speed = (tokPerSec !== undefined && tokPerSec > 0)
+      ? `${tokPerSec.toFixed(1)} tok/s • `
+      : (elapsed > 0 && tokens > 0 ? `${(tokens / elapsed).toFixed(1)} tok/s • ` : '');
+    this.phaseTokPerSec = tokPerSec || (elapsed > 0 ? tokens / elapsed : 0);
+    this.statusText = `Generating (~${tokens} tokens • ${speed}${elapsed.toFixed(1)}s)...`;
+    if (this.isTTY && this.barDrawn) {
+      this.updateLineInPlace();
+    }
+  }
+
+  setTool(name: string, args: Record<string, any>, elapsedSec?: number): void {
+    let icon = '⚡';
+    let detail = '';
+    switch (name) {
+      case 'bash':
+        icon = '⚡';
+        detail = args.command ? `bash: ${args.command}` : 'bash';
+        break;
+      case 'read':
+        icon = '📖';
+        detail = args.path ? `read: ${args.path}` : 'read';
+        break;
+      case 'write':
+        icon = '📝';
+        detail = args.path ? `write: ${args.path}` : 'write';
+        break;
+      case 'edit':
+        icon = '✏️';
+        detail = args.path ? `edit: ${args.path}` : 'edit';
+        break;
+      case 'web_search':
+        icon = '🔍';
+        detail = args.query ? `web search: "${args.query}"` : 'web search';
+        break;
+      case 'subagent_run':
+        icon = '👥';
+        detail = args.subagent ? `subagent ${args.subagent}` : 'subagent';
+        break;
+      case 'generate_image':
+        icon = '🎨';
+        detail = args.prompt ? `image: "${args.prompt.slice(0, 30)}"` : 'image';
+        break;
+      default:
+        icon = '●';
+        detail = name;
+        break;
+    }
+    this.currentPhase = 'tool';
+    this.customIcon = icon;
+    this.phaseDetail = detail;
+    if (elapsedSec !== undefined && elapsedSec > 0) {
+      this.phaseStartTime = Date.now() - Math.round(elapsedSec * 1000);
+      this.statusText = `Executing ${detail} (${elapsedSec.toFixed(1)}s)...`;
+    } else {
+      this.phaseStartTime = Date.now();
+      this.statusText = `Executing ${detail}...`;
+    }
+    if (this.isTTY && this.barDrawn) {
+      this.updateLineInPlace();
+    }
+  }
+
+  writeAbove(text: string): void {
+    if (!text) return;
+    if (!this.isTTY) {
+      process.stdout.write(text);
+      return;
+    }
+    const endsWithNewline = text.endsWith('\n');
+    const out = endsWithNewline ? text : text + '\n';
+    this.clearBar();
+    process.stdout.write(out);
+    this.renderInitialBar();
+  }
+
+  writeToken(token: string): void {
+    if (!this.isTTY) {
+      process.stdout.write(token);
+      return;
+    }
+    this.tokenBuffer += token;
+    const now = Date.now();
+    if (this.tokenBuffer.includes('\n') || now - this.lastFlushTime > 40) {
+      this.flushTokens();
+    }
+  }
+
+  flushTokens(): void {
+    if (!this.tokenBuffer) return;
+    const text = this.tokenBuffer;
+    this.tokenBuffer = '';
+    this.lastFlushTime = Date.now();
+    this.writeAbove(text);
+  }
+
+  stop(finalText?: string): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (this.tokenBuffer) {
+      const text = this.tokenBuffer;
+      this.tokenBuffer = '';
+      if (this.barDrawn) {
+        this.clearBar();
+      }
+      process.stdout.write(text);
+    }
+    if (this.barDrawn) {
+      this.clearBar();
+    }
+    if (this.isTTY) {
+      process.stdout.write('\x1b[?25h'); // Show cursor
+      if (process.stdout.removeListener) {
+        process.stdout.removeListener('resize', this.onResizeBound);
+      }
+    }
+    if (finalText) {
+      console.log(finalText);
+    }
+  }
+
+  private getCurrentFrame(): string {
+    if (this.customIcon) {
+      return `${this.customIcon} ${colors.butterGold}${this.rawGlyphs[this.spinnerIdx] || '⠋'}${colors.reset}`;
+    }
+    return `${colors.butterGold}${this.frames[this.spinnerIdx]}${colors.reset}`;
+  }
+
+  private renderInitialBar(): void {
+    const lines = formatWorkingPromptBar({
+      cols: process.stdout.columns || 80,
+      spinnerFrame: this.getCurrentFrame(),
+      statusText: this.statusText,
+      model: this.options.model,
+      effort: this.options.effort,
+      user: this.options.user,
+      quotaText: this.options.quotaText,
+    });
+    process.stdout.write(lines[0] + '\n' + lines[1] + '\n' + lines[2] + '\n' + lines[3]);
+    this.barDrawn = true;
+  }
+
+  private updateLineInPlace(): void {
+    if (!this.barDrawn || !this.isTTY) return;
+    const lines = formatWorkingPromptBar({
+      cols: process.stdout.columns || 80,
+      spinnerFrame: this.getCurrentFrame(),
+      statusText: this.statusText,
+      model: this.options.model,
+      effort: this.options.effort,
+      user: this.options.user,
+      quotaText: this.options.quotaText,
+    });
+    process.stdout.write(`\x1b[2A\r\x1b[2K${lines[1]}\x1b[2B\r`);
+  }
+
+  private clearBar(): void {
+    if (!this.barDrawn || !this.isTTY) return;
+    process.stdout.write('\r\x1b[3A\x1b[J');
+    this.barDrawn = false;
+  }
+
+  private handleResize(): void {
+    if (!this.isTTY || !this.barDrawn) return;
+    this.clearBar();
+    this.renderInitialBar();
+  }
+}
+

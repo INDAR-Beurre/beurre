@@ -69,7 +69,7 @@ export function renderMarkdownBlock(text: string, options: MarkdownOptions = {})
     const highlightedLines = highlightCodeBlock(code, lang);
 
     const title = ` 💻 ${lang} `;
-    const borderLen = Math.max(0, cols - title.length - 3);
+    const borderLen = Math.max(0, cols - title.length - 4);
 
     parts.push(`${colors.butterCrust}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterCrust}${'─'.repeat(borderLen)}╮${colors.reset}`);
     for (const hLine of highlightedLines) {
@@ -113,7 +113,7 @@ export function formatThinkingBlock(
   }
 
   const title = ` 🧠 Thinking Process (~${tokenEst} tokens${durationLabel}) `;
-  const borderLen = Math.max(0, width - title.length - 3);
+  const borderLen = Math.max(0, width - title.length - 4);
 
   const lines: string[] = [
     `${colors.butterCrust}╭──${colors.bold}${colors.butterPale}${title}${colors.reset}${colors.butterCrust}${'─'.repeat(borderLen)}╮${colors.reset}`,
@@ -167,7 +167,7 @@ export class StreamingMarkdownHighlighter {
           this.inCodeBlock = true;
           this.currentLang = trimmed.slice(3).trim() || 'code';
           const title = ` 💻 ${this.currentLang} `;
-          const borderLen = Math.max(0, this.cols - title.length - 3);
+          const borderLen = Math.max(0, this.cols - title.length - 4);
           this.onWrite(
             `\n${colors.butterCrust}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterCrust}${'─'.repeat(borderLen)}╮${colors.reset}\n`
           );
