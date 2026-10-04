@@ -93,20 +93,26 @@ export function renderMarkdownBlock(text: string, options: MarkdownOptions = {})
   return parts.join('\n\n');
 }
 
-export function formatThinkingBlock(thinking: string, isCollapsed = false, cols?: number): string {
+export function formatThinkingBlock(
+  thinking: string,
+  isCollapsed = false,
+  cols?: number,
+  durationStr?: string
+): string {
   const width = cols || Math.min(process.stdout.columns || 80, 80);
   const trimmed = thinking.trim();
   if (!trimmed) return '';
 
   const charsCount = trimmed.length;
   const tokenEst = Math.round(charsCount / 4);
+  const durationLabel = durationStr ? ` • ${durationStr}` : '';
 
   if (isCollapsed) {
     const firstLine = trimmed.split('\n')[0].slice(0, 60);
-    return `${colors.butterPale}🧠 ${colors.bold}Thinking${colors.reset} ${colors.dim}(~${tokenEst} tokens): ${firstLine}... [type /think to expand]${colors.reset}`;
+    return `${colors.butterPale}🧠 ${colors.bold}Thinking${colors.reset} ${colors.dim}(~${tokenEst} tokens${durationLabel}): ${firstLine}... [type /think to expand]${colors.reset}`;
   }
 
-  const title = ` 🧠 Thinking (~${tokenEst} tokens) `;
+  const title = ` 🧠 Thinking Process (~${tokenEst} tokens${durationLabel}) `;
   const borderLen = Math.max(0, width - title.length - 3);
 
   const lines: string[] = [
@@ -114,19 +120,21 @@ export function formatThinkingBlock(thinking: string, isCollapsed = false, cols?
   ];
 
   // Wrap thinking lines nicely
+  const innerWidth = width - 4;
   const rawLines = trimmed.split('\n');
   for (const line of rawLines) {
-    const maxLine = width - 4;
     let curr = line;
     if (!curr) {
-      lines.push(`${colors.butterCrust}│${colors.reset}`);
+      lines.push(`${colors.butterCrust}│${colors.reset}${' '.repeat(width - 2)}${colors.butterCrust}│${colors.reset}`);
       continue;
     }
-    while (curr.length > maxLine) {
-      lines.push(`${colors.butterCrust}│${colors.reset} ${colors.dim}${curr.slice(0, maxLine)}${colors.reset}`);
-      curr = curr.slice(maxLine);
+    while (curr.length > innerWidth) {
+      const chunk = curr.slice(0, innerWidth);
+      lines.push(`${colors.butterCrust}│${colors.reset} ${colors.dim}${chunk}${colors.reset} ${colors.butterCrust}│${colors.reset}`);
+      curr = curr.slice(innerWidth);
     }
-    lines.push(`${colors.butterCrust}│${colors.reset} ${colors.dim}${curr}${colors.reset}`);
+    const pad = Math.max(0, innerWidth - curr.length);
+    lines.push(`${colors.butterCrust}│${colors.reset} ${colors.dim}${curr}${colors.reset}${' '.repeat(pad)} ${colors.butterCrust}│${colors.reset}`);
   }
 
   lines.push(`${colors.butterCrust}╰${'─'.repeat(width - 2)}╯${colors.reset}`);

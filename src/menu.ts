@@ -103,34 +103,54 @@ export async function showMenu(
   const renderDashboard = () => {
     console.clear();
     const cols = Math.min(stdout.columns || 80, 80);
+    const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
     const title = ` 🧈 BEURRE DASHBOARD & CONTROL CENTER `;
     const borderLen = Math.max(0, cols - title.length - 3);
 
     console.log(`${colors.butterGold}╭──${colors.bold}${title}${colors.reset}${colors.butterGold}${'─'.repeat(borderLen)}╮${colors.reset}`);
-    console.log(
-      `${colors.butterGold}│${colors.reset}  ${b.bold('Model:')} ${b.badge(agent.getModel())}  ${colors.dim}•${colors.reset}  ${b.bold('Thinking:')} ${b.gold(currentThinkingMode)}  ${colors.dim}•${colors.reset}  ${b.bold('Cwd:')} ${b.cream(agent.getCwd())}`
-    );
+    const infoText = `  ${b.bold('Model:')} ${b.badge(agent.getModel())}  ${colors.dim}•${colors.reset}  ${b.bold('Thinking:')} ${b.gold(currentThinkingMode)}  ${colors.dim}•${colors.reset}  ${b.bold('Cwd:')} ${b.cream(agent.getCwd())}`;
+    const infoLen = stripAnsi(infoText).length;
+    const padHeader = Math.max(0, cols - infoLen - 2);
+    console.log(`${colors.butterGold}│${colors.reset}${infoText}${' '.repeat(padHeader)}${colors.butterGold}│${colors.reset}`);
     console.log(`${colors.butterGold}╰${'─'.repeat(cols - 2)}╯${colors.reset}\n`);
 
-    MENU_ITEMS.forEach((item, idx) => {
-      const isSelected = idx === selectedIdx;
-      const pointer = isSelected ? `${colors.butterGold}🧈 >${colors.reset} ` : '     ';
-      const keyBadge = isSelected
-        ? `${colors.bgButterGold}${colors.bold} [${item.id}] ${colors.reset}`
-        : `${b.gold(`[${item.id}]`)}`;
+    const sections = [
+      { name: 'MODELS & SESSIONS', ids: ['1', '6', '7'] },
+      { name: 'AUTONOMOUS & SUBAGENTS', ids: ['2', '3', '4'] },
+      { name: 'DISPLAY & TOOLING', ids: ['5', '8', '9'] },
+      { name: 'NAVIGATION', ids: ['0'] },
+    ];
 
-      let titleLabel = item.title;
-      if (item.id === '5') {
-        titleLabel = `Thinking Blocks Display (${currentThinkingMode.toUpperCase()})`;
-      }
+    sections.forEach((sec) => {
+      const secHeader = `  ${colors.butterCrust}─── ${colors.bold}${sec.name}${colors.reset}${colors.butterCrust} ${'─'.repeat(Math.max(0, cols - sec.name.length - 12))}${colors.reset}`;
+      console.log(secHeader);
 
-      const titleText = isSelected
-        ? `${colors.bold}${colors.butterCream}${item.icon} ${titleLabel}${colors.reset}`
-        : `${colors.bold}${item.icon} ${titleLabel}`;
+      sec.ids.forEach((id) => {
+        const item = MENU_ITEMS.find((m) => m.id === id);
+        if (!item) return;
 
-      console.log(`${pointer}${keyBadge} ${titleText}`);
-      console.log(`        ${colors.gray}${item.description}${colors.reset}\n`);
+        const idx = MENU_ITEMS.indexOf(item);
+        const isSelected = idx === selectedIdx;
+        const pointer = isSelected ? `${colors.butterGold}🧈 >${colors.reset} ` : '     ';
+        const keyBadge = isSelected
+          ? `${colors.bgButterGold}${colors.bold} [${item.id}] ${colors.reset}`
+          : `${b.gold(`[${item.id}]`)}`;
+
+        let titleLabel = item.title;
+        if (item.id === '5') {
+          titleLabel = `Thinking Blocks Display (${currentThinkingMode.toUpperCase()})`;
+        }
+
+        const titleText = isSelected
+          ? `${colors.bold}${colors.butterCream}${item.icon} ${titleLabel}${colors.reset}`
+          : `${colors.bold}${item.icon} ${titleLabel}`;
+
+        console.log(`${pointer}${keyBadge} ${titleText}`);
+        const descColor = isSelected ? colors.butterPale : colors.gray;
+        console.log(`        ${descColor}${item.description}${colors.reset}`);
+      });
+      console.log();
     });
 
     console.log(`${colors.dim}─────────────────────────────────────────────────────────────────────────────${colors.reset}`);

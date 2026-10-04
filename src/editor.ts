@@ -545,6 +545,7 @@ export class BeurreEditor {
 
         const lines = state.buffer.split('\n');
         const coords = getBuffer2DCoords(state.buffer, state.cursor);
+        const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
         // Calculate ghost completion text on line 0 if command matching
         let ghostText = '';
@@ -558,34 +559,56 @@ export class BeurreEditor {
         // Build box header with model and git status
         const modelBadge = options.model ? ` [${options.model}]` : '';
         const git = getGitStatus(options.cwd ?? process.cwd());
-        const gitTag = git.branch ? ` (${git.branch}${git.isDirty ? '*' : ''})` : '';
-        const headerTitle = ` 🧈 beurre${modelBadge}${gitTag} `;
-        const topBorderFill = Math.max(0, cols - headerTitle.length - 3);
+        const gitTag = git.branch ? ` (${git.branch}${git.isDirty ? '*' : ''}) ` : '';
+        const headerTitle = ` 🧈 beurre${modelBadge} `;
+
+        const leftLen = stripAnsi(headerTitle).length;
+        const rightLen = stripAnsi(gitTag).length;
+        const middleFill = Math.max(0, cols - leftLen - rightLen - 5);
 
         const drawnLines: string[] = [];
         drawnLines.push(
-          `${colors.butterMelt}╭──${colors.bold}${colors.butterGold}${headerTitle}${colors.reset}${colors.butterMelt}${'─'.repeat(topBorderFill)}╮${colors.reset}`
+          `${colors.butterCrust}╭──${colors.bold}${colors.butterGold}${headerTitle}${colors.reset}${colors.butterCrust}${'─'.repeat(middleFill)}${gitTag ? `${colors.cyan}${gitTag}${colors.reset}${colors.butterCrust}─` : '─'}╮${colors.reset}`
         );
 
-        // Render buffer lines
-        lines.forEach((l, idx) => {
-          const prefix = idx === 0 ? `${colors.butterGold}>${colors.reset} ` : `${colors.dim}…${colors.reset} `;
-          const ghost = idx === 0 ? `${colors.dim}${ghostText}${colors.reset}` : '';
-          const lineContent = `${prefix}${l}${ghost}`;
+        // Render buffer lines or placeholder
+        const isBufferEmpty = state.buffer === '';
+        const isMultiLine = lines.length > 1;
+        const maxLineNumDigits = lines.length.toString().length;
 
-          // Visual width padding
-          const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
-          const visualLen = stripAnsi(lineContent).length;
+        if (isBufferEmpty) {
+          const placeholder = `${colors.butterGold}>${colors.reset} ${colors.darkGray}Type a prompt or / for commands (Shift+Enter for newline)${colors.reset}`;
+          const visualLen = stripAnsi(placeholder).length;
           const pad = Math.max(0, cols - visualLen - 3);
-
           drawnLines.push(
-            `${colors.butterMelt}│${colors.reset} ${lineContent}${' '.repeat(pad)}${colors.butterMelt}│${colors.reset}`
+            `${colors.butterCrust}│${colors.reset} ${placeholder}${' '.repeat(pad)}${colors.butterCrust}│${colors.reset}`
           );
-        });
+        } else {
+          lines.forEach((l, idx) => {
+            let prefix = '';
+            if (isMultiLine) {
+              const numStr = (idx + 1).toString().padStart(maxLineNumDigits, ' ');
+              const arrow = idx === 0 ? `${colors.butterGold}>${colors.reset}` : ' ';
+              prefix = `${colors.darkGray}${numStr} │${colors.reset} ${arrow} `;
+            } else {
+              prefix = `${colors.butterGold}>${colors.reset} `;
+            }
+
+            const ghost = idx === 0 ? `${colors.dim}${ghostText}${colors.reset}` : '';
+            const lineContent = `${prefix}${l}${ghost}`;
+
+            const visualLen = stripAnsi(lineContent).length;
+            const pad = Math.max(0, cols - visualLen - 3);
+
+            drawnLines.push(
+              `${colors.butterCrust}│${colors.reset} ${lineContent}${' '.repeat(pad)}${colors.butterCrust}│${colors.reset}`
+            );
+          });
+        }
 
         // Autocomplete popup if matches exist
         if (state.autocompleteMatches.length > 0) {
-          const maxDisplay = 5;
+          const maxDisplay = 6;
           const visibleMatches = state.autocompleteMatches.slice(0, maxDisplay);
           const popupHeader = `├── Commands (↑/↓ select, Tab complete, Esc dismiss) `;
           const fillLen = Math.max(0, cols - popupHeader.length - 1);
@@ -600,9 +623,11 @@ export class BeurreEditor {
               : `${colors.bold}${colors.butterCream}${m.command}${colors.reset}${hint}`;
 
             const descText = `${colors.gray}• ${m.description}${colors.reset}`;
-            const lineContent = `  ${pointer} ${cmdText.padEnd(28, ' ')} ${descText}`;
 
-            const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
+            const visibleCmdLen = stripAnsi(cmdText).length;
+            const padCmd = Math.max(1, 26 - visibleCmdLen);
+            const lineContent = `  ${pointer} ${cmdText}${' '.repeat(padCmd)} ${descText}`;
+
             const visualLen = stripAnsi(lineContent).length;
             const pad = Math.max(0, cols - visualLen - 3);
 
@@ -614,7 +639,6 @@ export class BeurreEditor {
           if (state.autocompleteMatches.length > maxDisplay) {
             const remaining = state.autocompleteMatches.length - maxDisplay;
             const moreLine = `  ${colors.dim}... and ${remaining} more commands${colors.reset}`;
-            const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
             const visualLen = stripAnsi(moreLine).length;
             const pad = Math.max(0, cols - visualLen - 3);
             drawnLines.push(
@@ -624,14 +648,18 @@ export class BeurreEditor {
         }
 
         // Bottom border with status & shortcut hints
-        const turnsInfo = options.turns !== undefined ? `${options.turns}t ` : '';
-        const tokInfo = options.tokens !== undefined ? `~${Math.round(options.tokens / 1000)}k tok ` : '';
+        const turnsInfo = options.turns !== undefined && options.turns > 0 ? `${options.turns}t ` : '';
+        const tokInfo = options.tokens !== undefined && options.tokens > 0 ? `~${Math.round(options.tokens / 1000)}k tok` : '';
         const stats = `${turnsInfo}${tokInfo}`.trim();
-        const statsStr = stats ? `[${stats}] ` : '';
-        const footerTitle = ` ${statsStr}Enter send • Alt+Enter newline • Tab complete • /menu `;
-        const bottomFill = Math.max(0, cols - footerTitle.length - 3);
+        const statsTag = stats ? ` [${stats}] ` : '';
+
+        const footerHints = ` Enter send • Shift+Enter newline • Tab complete • /menu `;
+        const leftFooterLen = stripAnsi(footerHints).length;
+        const rightStatsLen = stripAnsi(statsTag).length;
+        const bottomFill = Math.max(0, cols - leftFooterLen - rightStatsLen - 5);
+
         drawnLines.push(
-          `${colors.butterMelt}╰──${colors.dim}${footerTitle}${colors.reset}${colors.butterMelt}${'─'.repeat(bottomFill)}╯${colors.reset}`
+          `${colors.butterCrust}╰──${colors.dim}${footerHints}${colors.reset}${colors.butterCrust}${'─'.repeat(bottomFill)}${statsTag ? `${colors.dim}${statsTag}${colors.reset}${colors.butterCrust}─` : '─'}╯${colors.reset}`
         );
 
         // Write all lines
@@ -639,15 +667,17 @@ export class BeurreEditor {
         renderedLinesCount = drawnLines.length;
 
         // Position cursor exactly at lineIdx and colIdx
-        // Header line is index 0. Buffer line 0 is index 1. Buffer line lineIdx is (1 + lineIdx).
         const targetRow = 1 + coords.lineIdx;
         const linesToMoveUp = renderedLinesCount - targetRow;
         if (linesToMoveUp > 0) {
           stdout.write(`\x1b[${linesToMoveUp}A`);
         }
 
-        // Target col: '│ > ' is 4 columns wide
-        const targetCol = 4 + coords.colIdx;
+        // Target col calculation
+        let targetCol = 4 + coords.colIdx;
+        if (isMultiLine) {
+          targetCol = 2 + maxLineNumDigits + 3 + 2 + coords.colIdx;
+        }
         stdout.write(`\x1b[${targetCol}G`);
       };
 

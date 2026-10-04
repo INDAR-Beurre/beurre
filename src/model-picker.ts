@@ -59,14 +59,16 @@ export async function openModelPicker(
   const render = () => {
     console.clear();
     const cols = Math.min(stdout.columns || 80, 80);
+    const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
     const title = ` 🧈 BEURRE MODEL NAVIGATOR `;
     const borderLen = Math.max(0, cols - title.length - 3);
 
     console.log(`${colors.butterGold}╭──${colors.bold}${title}${colors.reset}${colors.butterGold}${'─'.repeat(borderLen)}╮${colors.reset}`);
-    console.log(
-      `${colors.butterGold}│${colors.reset}  ${b.bold('Active:')} ${b.badge(currentModelId)}  ${colors.dim}•${colors.reset}  ${b.bold('Upstreams:')} ${b.green(`● ${liveProvidersCount} live`)} / ${providers.length} total`
-    );
+    const infoText = `  ${b.bold('Active:')} ${b.badge(currentModelId)}  ${colors.dim}•${colors.reset}  ${b.bold('Upstreams:')} ${b.green(`● ${liveProvidersCount} live`)} / ${providers.length} total`;
+    const infoLen = stripAnsi(infoText).length;
+    const padHeader = Math.max(0, cols - infoLen - 2);
+    console.log(`${colors.butterGold}│${colors.reset}${infoText}${' '.repeat(padHeader)}${colors.butterGold}│${colors.reset}`);
     console.log(`${colors.butterGold}╰${'─'.repeat(cols - 2)}╯${colors.reset}\n`);
 
     const filtered = filterModelList(models, filterQuery);
@@ -104,12 +106,23 @@ export async function openModelPicker(
         const isSelected = actualIdx === selectedIdx;
         const isCurrent = m.id === currentModelId;
 
-        const pointer = isSelected ? `${colors.butterGold}🧈 >${colors.reset} ` : '     ';
-        const activeBadge = isCurrent ? ` ${colors.bgButterGold}${colors.bold} ACTIVE ${colors.reset}` : '';
+        const pointer = isSelected ? `${colors.butterGold}🧈 ❯${colors.reset} ` : '     ';
+        const activeBadge = isCurrent ? ` ${colors.green}${colors.bold}[ACTIVE]${colors.reset}` : '';
+
+        let modelLabelText = m.id;
+        if (filterQuery && m.id.toLowerCase().includes(filterQuery.toLowerCase())) {
+          const matchIdx = m.id.toLowerCase().indexOf(filterQuery.toLowerCase());
+          const before = m.id.slice(0, matchIdx);
+          const match = m.id.slice(matchIdx, matchIdx + filterQuery.length);
+          const after = m.id.slice(matchIdx + filterQuery.length);
+          modelLabelText = `${before}${colors.butterGold}${colors.underline}${match}${colors.reset}${isSelected ? colors.butterCream : ''}${after}`;
+        }
 
         const modelLabel = isSelected
-          ? `${colors.bold}${colors.butterCream}${m.id.padEnd(26, ' ')}${colors.reset}`
-          : `${m.id.padEnd(26, ' ')}`;
+          ? `${colors.bold}${colors.butterCream}${modelLabelText}${colors.reset}`
+          : `${colors.bold}${modelLabelText}${colors.reset}`;
+
+        const modelPad = Math.max(1, 28 - stripAnsi(modelLabel).length);
 
         const ctxTag = m.context_length
           ? `${colors.cyan}${Math.round(m.context_length / 1000)}k ctx${colors.reset}`
@@ -119,7 +132,7 @@ export async function openModelPicker(
 
         const tags = [ctxTag, reasonTag, providerTag].filter(Boolean).join(' • ');
 
-        console.log(`${pointer}${modelLabel} ${tags}${activeBadge}`);
+        console.log(`${pointer}${modelLabel}${' '.repeat(modelPad)} ${tags}${activeBadge}`);
       });
 
       if (filtered.length > scrollOffset + pageSize) {

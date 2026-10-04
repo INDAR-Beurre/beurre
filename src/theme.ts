@@ -87,14 +87,16 @@ export function claudePromptHeader(model: string, cwd: string): string {
   const branch = getGitBranch(cwd);
   const gitInfo = branch ? ` (git: ${branch})` : '';
   const cols = Math.min(process.stdout.columns || 80, 80);
+  const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
   const title = ` beurre [${model}] `;
   const borderLen = Math.max(0, cols - title.length - 3);
 
-  const line1 = `${colors.butterMelt}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterMelt}${'─'.repeat(borderLen)}╮${colors.reset}`;
+  const line1 = `${colors.butterCrust}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterCrust}${'─'.repeat(borderLen)}╮${colors.reset}`;
   const infoText = `  🧈 ${colors.butterCream}${shortPath}${colors.dim}${gitInfo}${colors.reset}  ${colors.dim}•${colors.reset}  ${colors.dim}type ${colors.butterGold}/menu${colors.dim} for dashboard${colors.reset}`;
-  const line2 = `${colors.butterMelt}│${colors.reset}${infoText}`;
-  const line3 = `${colors.butterMelt}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
+  const pad = Math.max(0, cols - stripAnsi(infoText).length - 2);
+  const line2 = `${colors.butterCrust}│${colors.reset}${infoText}${' '.repeat(pad)}${colors.butterCrust}│${colors.reset}`;
+  const line3 = `${colors.butterCrust}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
 
   return `\n${line1}\n${line2}\n${line3}\n`;
 }
@@ -103,16 +105,51 @@ export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process
   const shortPath = formatShortCwd(cwd);
   const git = getGitStatus(cwd);
   const gitInfo = git.branch ? ` (git: ${git.branch}${git.isDirty ? '*' : ''})` : '';
+  const cols = Math.min(process.stdout.columns || 80, 80);
+  const innerWidth = cols - 4;
 
-  return `
-${colors.butterGold}${colors.bold}🧈 BEURRE${colors.reset} ${colors.dim}v${version} — L'Agent Fondant & Autonome (Claude Code / OMP Style)${colors.reset}
-${colors.dim}─────────────────────────────────────────────────────────────────────────────${colors.reset}
-  ${b.bold('Model:')}      ${b.gold(model)} ${colors.dim}(Relay Gateway • 🧠 reasoning)${colors.reset}
-  ${b.bold('Directory:')}  ${b.cream(shortPath)}${colors.dim}${gitInfo}${colors.reset}
-  ${b.bold('Relay:')}      ${b.cyan('https://relay-gw.pages.dev')} ${colors.green}● LIVE${colors.reset}
-  ${b.bold('Control:')}    Type ${b.gold('/menu')} for options, ${b.gold('/loop')} for prompt loop, ${b.gold('/help')} for commands
-${colors.dim}─────────────────────────────────────────────────────────────────────────────${colors.reset}
-`;
+  const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
+  const padLine = (content: string, visibleLen: number) => {
+    const pad = Math.max(0, innerWidth - visibleLen);
+    return `${colors.butterCrust}│${colors.reset}  ${content}${' '.repeat(pad)}${colors.butterCrust}│${colors.reset}`;
+  };
+
+  const lineHero = `${colors.bold}${colors.butterGold}🧈 BEURRE${colors.reset} ${colors.dim}v${version}${colors.reset}  ${colors.dim}•${colors.reset}  ${colors.butterCream}L'Agent Fondant & Autonome (Claude / OMP Style)${colors.reset}`;
+  const lineHeroLen = stripAnsi(lineHero).length;
+
+  const lineModel = `${b.bold('Model:')}      ${b.gold(model)} ${colors.dim}(Relay Gateway • 🧠 reasoning)${colors.reset}`;
+  const lineModelLen = stripAnsi(lineModel).length;
+
+  const lineDir = `${b.bold('Directory:')}  ${b.cream(shortPath)}${colors.dim}${gitInfo}${colors.reset}`;
+  const lineDirLen = stripAnsi(lineDir).length;
+
+  const lineRelay = `${b.bold('Relay:')}      ${b.cyan('https://relay-gw.pages.dev')} ${colors.green}● LIVE${colors.reset}`;
+  const lineRelayLen = stripAnsi(lineRelay).length;
+
+  const lineSubs = `${b.bold('Subagents:')}  ${b.pale('Architect • CodeCraft • Reviewer • BugHunter • Scout')}${colors.dim} (ready)${colors.reset}`;
+  const lineSubsLen = stripAnsi(lineSubs).length;
+
+  const lineCmds = `${b.bold('Control:')}    ${b.gold('/menu')} dashboard • ${b.gold('/model')} switch • ${b.gold('/loop')} loop • ${b.gold('/help')} help`;
+  const lineCmdsLen = stripAnsi(lineCmds).length;
+
+  const topBorder = `${colors.butterCrust}╭${'─'.repeat(cols - 2)}╮${colors.reset}`;
+  const midDivider = `${colors.butterCrust}├${'─'.repeat(cols - 2)}┤${colors.reset}`;
+  const bottomBorder = `${colors.butterCrust}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
+
+  return [
+    '',
+    topBorder,
+    padLine(lineHero, lineHeroLen),
+    midDivider,
+    padLine(lineModel, lineModelLen),
+    padLine(lineDir, lineDirLen),
+    padLine(lineRelay, lineRelayLen),
+    padLine(lineSubs, lineSubsLen),
+    midDivider,
+    padLine(lineCmds, lineCmdsLen),
+    bottomBorder,
+    '',
+  ].join('\n');
 }
 
 export interface StatusBarOptions {
@@ -176,40 +213,64 @@ export function renderToast(message: string, isSuccess = true): string {
   return `${colors.bgGray} ${icon} ${colors.bold}${message} ${colors.reset}`;
 }
 
-export function formatClaudeToolCall(name: string, args: Record<string, any>): string {
+export function formatClaudeToolCall(name: string, args: Record<string, any>, durationMs?: number): string {
   let detail = '';
   switch (name) {
     case 'bash':
       detail = b.bold(args.command || '');
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Bash')}(${detail})`;
+      break;
     case 'read':
       detail = `${b.cream(args.path || '')}${args.offset ? `:${args.offset}` : ''}`;
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Read')}(${detail})`;
+      break;
     case 'write':
       detail = b.cream(args.path || '');
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Write')}(${detail})`;
+      break;
     case 'edit':
       detail = b.cream(args.path || '');
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Edit')}(${detail})`;
+      break;
     case 'web_search':
       detail = b.cream(`"${args.query || ''}"`);
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Search')}(${detail})`;
+      break;
     case 'subagent_run':
       detail = `${b.subagentBadge(args.subagent || '')} → ${b.dim(args.task?.slice(0, 50) || '')}`;
-      return `${colors.butterMelt}●${colors.reset} ${b.bold('Subagent')}(${detail})`;
+      break;
     default:
       detail = JSON.stringify(args).slice(0, 60);
-      return `${colors.butterMelt}●${colors.reset} ${b.bold(name)}(${b.dim(detail)})`;
+      break;
+  }
+
+  const timing = durationMs !== undefined
+    ? ` ${colors.dim}[${durationMs >= 1000 ? (durationMs / 1000).toFixed(1) + 's' : durationMs + 'ms'}]${colors.reset}`
+    : '';
+
+  switch (name) {
+    case 'bash':
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Bash')}(${detail})${timing}`;
+    case 'read':
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Read')}(${detail})${timing}`;
+    case 'write':
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Write')}(${detail})${timing}`;
+    case 'edit':
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Edit')}(${detail})${timing}`;
+    case 'web_search':
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Search')}(${detail})${timing}`;
+    case 'subagent_run':
+      return `${colors.butterMelt}●${colors.reset} ${b.bold('Subagent')}(${detail})${timing}`;
+    default:
+      return `${colors.butterMelt}●${colors.reset} ${b.bold(name)}(${b.dim(detail)})${timing}`;
   }
 }
 
-export function formatClaudeToolResult(output: string, isError = false): string {
+export function formatClaudeToolResult(output: string, isError = false, durationMs?: number): string {
   const icon = isError ? colors.red + '❌ ' : colors.green + '└─ ';
   const firstLine = output.trim().split('\n')[0] || '(empty)';
   const preview = firstLine.slice(0, 100);
   const remaining = output.trim().split('\n').length - 1;
   const more = remaining > 0 ? ` ${colors.dim}(+${remaining} more lines)` : '';
-  return `  ${icon}${colors.dim}${preview}${colors.reset}${more}`;
+  const timing = durationMs !== undefined
+    ? ` ${colors.dim}[${durationMs >= 1000 ? (durationMs / 1000).toFixed(1) + 's' : durationMs + 'ms'}]${colors.reset}`
+    : '';
+  return `  ${icon}${colors.dim}${preview}${colors.reset}${more}${timing}`;
 }
 
 export function butterBox(title: string, content: string, borderColor = colors.butterMelt): string {

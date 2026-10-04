@@ -257,7 +257,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
     }
 
     // Normal Turn Execution with Streaming, Thinking Blocks, Diffs & Clean Error Recovery
-    console.log(`\n${b.gold('🧈 you')} ${b.melt('>')} ${trimmed}`);
+    console.log(`\n${colors.butterGold}${colors.bold}🧈 you${colors.reset} ${colors.dim}❯${colors.reset} ${colors.butterCream}${trimmed}${colors.reset}\n`);
 
     activeAbortController = new AbortController();
     const spinner = new ButterSpinner();
@@ -267,6 +267,8 @@ export async function startRepl(initialModel?: string): Promise<void> {
     let accumulatedReasoning = '';
     let thinkingBlockRendered = false;
     let hasStartedTokenStream = false;
+    let thinkingStartTime = Date.now();
+    let toolStartTime = 0;
 
     const streamHighlighter = new StreamingMarkdownHighlighter();
 
@@ -274,7 +276,8 @@ export async function startRepl(initialModel?: string): Promise<void> {
       if (accumulatedReasoning && !thinkingBlockRendered && thinkingMode !== 'hidden') {
         spinner.stop();
         const isCollapsed = thinkingMode === 'collapsed';
-        console.log('\n' + formatThinkingBlock(accumulatedReasoning, isCollapsed));
+        const elapsed = ((Date.now() - thinkingStartTime) / 1000).toFixed(1) + 's';
+        console.log('\n' + formatThinkingBlock(accumulatedReasoning, isCollapsed, undefined, elapsed));
         thinkingBlockRendered = true;
         lastReasoning = accumulatedReasoning;
       }
@@ -289,8 +292,9 @@ export async function startRepl(initialModel?: string): Promise<void> {
             accumulatedReasoning += res;
             lastReasoning = accumulatedReasoning;
             if (!hasStartedTokenStream) {
-              const snippet = accumulatedReasoning.slice(-30).trim();
-              spinner.update(`Thinking (${snippet})...`);
+              const elapsed = ((Date.now() - thinkingStartTime) / 1000).toFixed(1);
+              const tokenEst = Math.round(accumulatedReasoning.length / 4);
+              spinner.update(`Thinking (~${tokenEst} tokens • ${elapsed}s)...`);
             }
           },
           onToken: (tok) => {
@@ -298,7 +302,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
               spinner.stop();
               renderThinkingIfNeeded();
               hasStartedTokenStream = true;
-              process.stdout.write(`\n${colors.butterGold}🧈${colors.reset} `);
+              process.stdout.write(`${colors.butterGold}${colors.bold}🧈 beurre${colors.reset} ${colors.dim}❯${colors.reset} `);
             }
             accumulatedResponse += tok;
             streamHighlighter.feed(tok);
@@ -311,22 +315,24 @@ export async function startRepl(initialModel?: string): Promise<void> {
             }
             spinner.stop();
             renderThinkingIfNeeded();
+            toolStartTime = Date.now();
             console.log(`\n${formatClaudeToolCall(name, args)}`);
             spinner.start(`Executing ${name}...`);
           },
           onToolEnd: (name, output, isError, diff) => {
+            const elapsedMs = toolStartTime > 0 ? Date.now() - toolStartTime : 0;
             spinner.stop();
             if (diff) {
               console.log('\n' + diff);
             } else {
-              console.log(formatClaudeToolResult(output, isError));
+              console.log(formatClaudeToolResult(output, isError, elapsedMs));
             }
           },
         },
         activeAbortController.signal
       );
 
-      // Finalize thinking block if it hadn't triggered yet (e.g. model gave reasoning with no tokens/tools)
+      // Finalize thinking block if it hadn't triggered yet
       renderThinkingIfNeeded();
 
       // Estimate tokens
