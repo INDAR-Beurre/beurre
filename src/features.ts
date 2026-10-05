@@ -97,7 +97,9 @@ export function runDoctor(cwd: string): DoctorCheck[] {
 }
 
 export function renderDoctor(checks: DoctorCheck[], width: number): string[] {
-  const nameW = Math.max(...checks.map((c) => c.name.length));
+  // Math.max() of an empty array is -Infinity; guard it or the pad math below
+  // produces NaN and the frame comes out ragged.
+  const nameW = checks.length ? Math.max(...checks.map((c) => c.name.length)) : 0;
   const lines = checks.map((c) => {
     const mark = c.ok ? `${colors.green}✔${colors.reset}` : `${colors.red}✖${colors.reset}`;
     const label = `${mark} ${c.name}`;
@@ -110,7 +112,9 @@ export function renderDoctor(checks: DoctorCheck[], width: number): string[] {
   const summary = bad === 0
     ? `${colors.green}✔ all ${checks.length} checks passed${colors.reset}`
     : `${colors.red}✖ ${bad} of ${checks.length} checks failed${colors.reset}`;
-  return [...box({ title: "doctor", lines, width }), "", `  ${summary}`];
+  // The summary was appended after the frame, which made it the only row
+  // that could overflow at narrow widths. It belongs inside.
+  return box({ title: "doctor", width, lines, footer: summary });
 }
 
 // ------------------------------------------------------------ /outline ----
@@ -150,7 +154,9 @@ export function outlineFile(filePath: string): OutlineNode[] {
 }
 
 export function renderOutline(nodes: OutlineNode[], width: number): string[] {
-  if (nodes.length === 0) return [`${colors.dim}  no declarations found${colors.reset}`];
+  if (nodes.length === 0) {
+    return box({ title: 'outline (0)', width, lines: [`${colors.dim}no declarations found${colors.reset}`] });
+  }
   const maxLine = String(Math.max(...nodes.map((n) => n.line))).length;
   const kindTag = {
     def: `${colors.cyan}def${colors.reset}`,

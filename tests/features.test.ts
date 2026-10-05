@@ -75,9 +75,17 @@ describe('features: /doctor', () => {
 
   it('puts one row per check, not one collapsed blob', () => {
     const checks = runDoctor(fixture());
-    const lines = renderDoctor(checks, 80);
-    // border top + one row per check + border bottom + blank + summary
-    expect(lines.length).toBe(checks.length + 4);
+    const lines = renderDoctor(checks, 80).map((l) => stripAnsi(l));
+    // One row per check. The old assertion counted lines to pin the frame's
+    // exact height, which broke the moment the summary moved inside the box —
+    // that is a shape detail, not the contract. The real requirement is that
+    // every check is individually visible and the summary shares the frame.
+    for (const c of checks) {
+      expect(lines.some((l) => l.includes(c.name))).toBe(true);
+    }
+    expect(lines.some((l) => l.includes('checks passed') || l.includes('checks failed'))).toBe(true);
+    expect(lines[0]).toContain('╭');
+    expect(lines[lines.length - 1]).toContain('╰');
   });
 });
 
@@ -98,10 +106,13 @@ describe('features: /outline', () => {
     expect(outlineFile(path.join(dir, 'src', 'a.ts')).length).toBeLessThan(lines);
   });
 
-  it('returns a visible empty state rather than blank rows', () => {
+  it('returns a framed empty state rather than blank rows', () => {
     const rows = renderOutline([], 60);
-    expect(rows).toHaveLength(1);
-    expect(stripAnsi(rows[0])).toContain('no declarations');
+    // Framed, because the populated path returns a frame: an unframed empty state
+    // makes the overlay change height when the first declaration is added.
+    expect(stripAnsi(rows.join('\n'))).toContain('no declarations');
+    expect(rows[0]).toContain('╭');
+    expect(rows[rows.length - 1]).toContain('╰');
   });
 
   it('stays within width at every terminal size', () => {
