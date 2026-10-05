@@ -362,7 +362,7 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
   },
   {
     command: '/hooks',
-    description: 'Shell commands fired at lifecycle points, ported from Claude Code',
+    description: 'Shell commands fired at lifecycle points; can block a tool call',
     category: 'Automation',
   },
   {

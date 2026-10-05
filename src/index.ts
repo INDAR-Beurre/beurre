@@ -9,8 +9,8 @@ import {
   colors,
   banner,
   ButterSpinner,
-  formatClaudeToolCall,
-  formatClaudeToolResult,
+  formatToolCall,
+  formatToolResult,
 } from './theme.ts';
 import { formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts';
 
@@ -202,7 +202,7 @@ async function main(): Promise<void> {
           }
           spinner.stop();
           renderThinkingIfNeeded();
-          console.log(`\n${formatClaudeToolCall(name, args)}`);
+          console.log(`\n${formatToolCall(name, args)}`);
           spinner.start(`Executing ${name}...`);
         },
         onToolEnd: (name, output, isError, diff) => {
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
           if (diff) {
             console.log('\n' + diff);
           } else {
-            console.log(formatClaudeToolResult(output, isError));
+            console.log(formatToolResult(output, isError));
           }
         },
       });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { extractToolCallsFromContent, getModelDisplayName } from '../src/relay.ts';
 import { BEURRE_TOOLS } from '../src/tools.ts';
 import { getSubagent } from '../src/subagents.ts';
-import { colors, formatUserMessageCard, formatAgentHeader, formatClaudeToolCall } from '../src/theme.ts';
+import { colors, formatUserMessageCard, formatAgentHeader, formatToolCall } from '../src/theme.ts';
 
 describe('Tool Prompting & Chat-Proxied Response Parsing Engine', () => {
   it('should parse XML <tool_call> tags and strip them from content', () => {
@@ -79,7 +79,7 @@ describe('Tool Prompting & Chat-Proxied Response Parsing Engine', () => {
       ['subagent_run', 'Subagent', colors.toolSubagent],
       ['generate_image', 'ImageGen', colors.toolImage],
     ]) {
-      const call = formatClaudeToolCall(name, {});
+      const call = formatToolCall(name, {});
       expect(call.startsWith(`${colors.bold}${color}${label}${colors.reset}(`)).toBe(true);
     }
   });

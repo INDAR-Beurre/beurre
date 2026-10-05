@@ -19,8 +19,8 @@ import {
   banner,
   ButterSpinner,
   BeurreWorkingBar,
-  formatClaudeToolCall,
-  formatClaudeToolResult,
+  formatToolCall,
+  formatToolResult,
   formatUserMessageCard,
   formatAgentHeader,
   renderErrorCard,
@@ -1292,7 +1292,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
             }
             renderThinkingIfNeeded();
             toolStartTime = Date.now();
-            workingBar.writeAbove(`\n${formatClaudeToolCall(name, args)}\n`);
+            workingBar.writeAbove(`\n${formatToolCall(name, args)}\n`);
             workingBar.setTool(name, args);
           },
           onToolEnd: (name, output, isError, diff) => {
@@ -1300,7 +1300,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
             if (diff) {
               workingBar.writeAbove('\n' + diff + '\n');
             } else {
-              workingBar.writeAbove(formatClaudeToolResult(output, isError, elapsedMs) + '\n');
+              workingBar.writeAbove(formatToolResult(output, isError, elapsedMs) + '\n');
             }
             workingBar.update('Whipping up solution...');
           },

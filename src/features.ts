@@ -38,7 +38,11 @@ export function renderCost(model: string, tokens: number, width: number): string
     cost === null
       ? 'no published price for this model'
       : `$${cost.toFixed(4)} for ~${tokens.toLocaleString('en-US')} tokens`;
-  return columns(b.dim(left), b.gold(right), width);
+  return box({
+    title: 'estimated spend',
+    width,
+    lines: [columns(b.dim(left), b.gold(right), width - 6)],
+  }).join('\n');
 }
 
 // ------------------------------------------------------------- /doctor ----
@@ -210,13 +214,15 @@ export function loadCheckpoint(id: string): Checkpoint | null {
 
 export function renderCheckpoints(points: Checkpoint[], width: number): string {
   if (points.length === 0) return `${colors.dim}  no checkpoints yet — save one with /checkpoint save <label>${colors.reset}`;
-  return points
-    .slice(0, 20)
-    .map((c) => {
+  const shown = points.slice(0, 20);
+  return box({
+    title: `checkpoints (${shown.length}${points.length > 20 ? ` of ${points.length}` : ''})`,
+    width,
+    lines: shown.map((c) => {
       const when = c.at.replace('T', ' ').slice(0, 19);
-      return columns(`  ${colors.dim}${when}${colors.reset}`, truncate(c.label, Math.max(8, width - 26)), width);
-    })
-    .join('\n');
+      return columns(`${colors.dim}${when}${colors.reset}`, truncate(c.label, Math.max(8, width - 30)), width - 6);
+    }),
+  }).join('\n');
 }
 
 // -------------------------------------------------------------- /stats ----
@@ -269,9 +275,14 @@ export function renderStats(s: SessionStats, model: string, width: number): stri
 export function renderToolCatalog(width: number): string {
   const rows = BEURRE_TOOLS.map((t) => [t.function.name, t.function.description]);
   const label = Math.max(...rows.map(([n]) => n.length));
-  return rows
-    .map(([n, d]) => truncate(`  ${colors.butterGold}${n.padEnd(label)}${colors.reset}  ${colors.dim}${d}${colors.reset}`, width))
-    .join('\n');
+  // Framed for the same reason as `/env`: a read-only catalog should hold still
+  // in one frame instead of scrolling as loose text.
+  return box({
+    title: `tools (${rows.length})`,
+    width,
+    lines: rows.map(([n, d]) =>
+      `${colors.butterGold}${n.padEnd(label)}${colors.reset}  ${colors.dim}${truncate(d, Math.max(4, width - label - 6))}${colors.reset}`),
+  }).join('\n');
 }
 
 // ------------------------------------------------------------- /env ----
@@ -288,9 +299,15 @@ export function renderEnv(cwd: string, model: string, effort: string, width: num
     ['Terminal', `${process.stdout.columns || 80}x${process.stdout.rows || 24}`],
   ];
   const label = Math.max(...rows.map(([k]) => k.length));
-  return rows
-    .map(([k, v]) => truncate(`  ${colors.dim}${k.padEnd(label)}${colors.reset}  ${colors.butterCream}${v}${colors.reset}`, width))
-    .join('\n');
+  // Framed like every other read-only surface. `/env` was the lone unboxed one,
+  // so it scrolled away as loose text while `/keys` and `/permissions` kept a
+  // stable frame — the inconsistency a user reads as "this one is unfinished".
+  return box({
+    title: 'environment',
+    width,
+    lines: rows.map(([k, v]) =>
+      `${colors.dim}${k.padEnd(label)}${colors.reset}  ${colors.butterCream}${truncate(v, Math.max(4, width - label - 6))}${colors.reset}`),
+  }).join('\n');
 }
 
 // ------------------------------------------------------------ /snippets ----
@@ -332,9 +349,12 @@ export function renderSnippets(snippets: Snippet[], width: number): string {
     return `${colors.dim}  no snippets yet — make one with ${b.gold('/snippet add <name> <text>')}${colors.reset}`;
   }
   const label = Math.max(...snippets.map((s) => s.name.length));
-  return snippets
-    .map((s) => truncate(`  ${colors.butterGold}${s.name.padEnd(label)}${colors.reset}  ${colors.dim}${s.text}${colors.reset}`, width))
-    .join('\n');
+  return box({
+    title: `snippets (${snippets.length})`,
+    width,
+    lines: snippets.map((s) =>
+      `${colors.butterGold}${s.name.padEnd(label)}${colors.reset}  ${colors.dim}${truncate(s.text, Math.max(4, width - label - 6))}${colors.reset}`),
+  }).join('\n');
 }
 
 // ------------------------------------------------------------ /grep ----

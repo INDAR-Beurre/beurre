@@ -1,7 +1,7 @@
 import { BeurreAgent } from './agent.ts';
 import { compactMessages } from './compact.ts';
 import { formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts';
-import { b, colors, ButterSpinner, BeurreWorkingBar, formatClaudeToolCall, formatClaudeToolResult, formatUserMessageCard } from './theme.ts';
+import { b, colors, ButterSpinner, BeurreWorkingBar, formatToolCall, formatToolResult, formatUserMessageCard } from './theme.ts';
 
 export interface LoopOptions {
   delayMs?: number;
@@ -114,14 +114,14 @@ export class BeurreLoopRunner {
                   hasTokens = false;
                 }
                 renderThinkingIfNeeded();
-                workingBar.writeAbove(`\n${formatClaudeToolCall(name, args)}\n`);
+                workingBar.writeAbove(`\n${formatToolCall(name, args)}\n`);
                 workingBar.setTool(name, args);
               },
               onToolEnd: (name, output, isError, diff) => {
                 if (diff) {
                   workingBar.writeAbove('\n' + diff + '\n');
                 } else {
-                  workingBar.writeAbove(formatClaudeToolResult(output, isError) + '\n');
+                  workingBar.writeAbove(formatToolResult(output, isError) + '\n');
                 }
                 workingBar.update(`Iteration #${this.currentIteration} executing...`);
               },

@@ -4,8 +4,8 @@ import {
   PALETTE_RGB,
   renderErrorCard,
   renderToast,
-  formatClaudeToolCall,
-  formatClaudeToolResult,
+  formatToolCall,
+  formatToolResult,
   getGitStatus,
   formatWorkingPromptBar,
   formatSteeringPromptBar,
@@ -38,20 +38,20 @@ describe('Butter Theme & Status Rendering', () => {
   });
 
   it('should format tool calls with badges', () => {
-    const bashCall = formatClaudeToolCall('bash', { command: 'bun test' });
+    const bashCall = formatToolCall('bash', { command: 'bun test' });
     expect(bashCall).toContain('Bash');
     expect(bashCall).toContain('bun test');
 
-    const subCall = formatClaudeToolCall('subagent_run', { subagent: 'Architect', task: 'design' });
+    const subCall = formatToolCall('subagent_run', { subagent: 'Architect', task: 'design' });
     expect(subCall).toContain('Subagent');
     expect(subCall).toContain('Architect');
   });
 
   it('should format tool results with line indicators', () => {
-    const singleLine = formatClaudeToolResult('Success', false);
+    const singleLine = formatToolResult('Success', false);
     expect(singleLine).toContain('Success');
 
-    const multiLine = formatClaudeToolResult('line 1\nline 2\nline 3', false);
+    const multiLine = formatToolResult('line 1\nline 2\nline 3', false);
     expect(multiLine).toContain('line 1');
     expect(multiLine).toContain('+2 more lines');
   });
@@ -430,6 +430,24 @@ describe('banner', () => {
 
   it('reads the version from package.json rather than a literal', () => {
     expect(BEURRE_VERSION).toBe(pkg.version);
+  });
+});
+
+describe('the banner hint', () => {
+  // The hint used to be picked by a hardcoded breakpoint, which truncated the
+  // shortest tier at 24 columns into `Type a task.  /menu  /…` — a command
+  // name clipped past recognition. Whichever tier is chosen it must be whole.
+  it('never truncates a command name at any width', () => {
+    const prev = process.stdout.columns;
+    for (let w = 20; w <= 200; w++) {
+      process.stdout.columns = w;
+      const line = banner('1.0.0', 'glm-5-3-flash', '/tmp', 'high')
+        .split('\n')
+        .find((l) => l.includes('/help'));
+      expect(line).toBeDefined();
+      expect(line).not.toMatch(/\/\w*…/);
+    }
+    process.stdout.columns = prev;
   });
 });
 

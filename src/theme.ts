@@ -176,11 +176,16 @@ export function banner(version = BEURRE_VERSION, model = 'glm-5-3-flash', cwd = 
 
   // Below ~64 columns the model id is noise: keep the display name only.
   const modelField = width < 64 ? modelName : `${modelName} (${model})`;
-  const hints = width < 56
-    ? 'Type a task.  /menu  /help'
-    : width < 72
-      ? 'Type a task and press Enter.  /menu settings  /help'
-      : 'Type a task and press Enter.  /menu settings  /models switch  /help all commands';
+  // Each hint is picked by whether it *fits*, not by a guessed breakpoint. The
+  // old hardcoded tiers truncated a 28-character hint at 24 columns, rendering
+  // it as `Type a task.  /menu  /…` — a command name clipped past recognition.
+  const hintTiers = [
+    'Type a task and press Enter.  /menu settings  /models switch  /help all commands',
+    'Type a task and press Enter.  /menu settings  /help',
+    'Type a task.  /menu  /help',
+    '/menu  /help',
+  ];
+  const hints = hintTiers.find((h) => h.length + 1 <= width) ?? '/help';
 
 
   // The mark is drawn in the gutter beside the first two content rows, so the
@@ -273,29 +278,36 @@ export function formatAgentHeader(model: string, effort?: string): string {
   return `\n${colors.butterGold}${colors.bold}BEURRE${colors.reset} ${colors.dim}[${colors.butterCream}${modelDisplayName}${colors.dim}]${colors.reset}${effortBadge}\n\n`;
 }
 
-export function formatClaudeToolCall(name: string, args: Record<string, any>, durationMs?: number): string {
+export function formatToolCall(name: string, args: Record<string, unknown>, durationMs?: number): string {
+  // Tool arguments arrive as untrusted JSON from the model, so every field is
+  // narrowed through a guard rather than asserted. `str` is the single place
+  // that decides what a scalar is allowed to be.
+  const str = (key: string) => {
+    const v = args[key];
+    return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
+  };
   let detail = '';
   switch (name) {
     case 'bash':
-      detail = `${colors.bold}${colors.white}${args.command || ''}${colors.reset}`;
+      detail = `${colors.bold}${colors.white}${str('command')}${colors.reset}`;
       break;
     case 'read':
-      detail = `${colors.cyan}${args.path || ''}${args.offset ? `:${args.offset}` : ''}${colors.reset}`;
+      detail = `${colors.cyan}${str('path')}${str('offset') ? `:${str('offset')}` : ''}${colors.reset}`;
       break;
     case 'write':
-      detail = `${colors.cyan}${args.path || ''}${colors.reset}`;
+      detail = `${colors.cyan}${str('path')}${colors.reset}`;
       break;
     case 'edit':
-      detail = `${colors.green}${args.path || ''}${colors.reset}`;
+      detail = `${colors.green}${str('path')}${colors.reset}`;
       break;
     case 'web_search':
-      detail = `${colors.italic}${colors.butterCream}"${args.query || ''}"${colors.reset}`;
+      detail = `${colors.italic}${colors.butterCream}"${str('query')}"${colors.reset}`;
       break;
     case 'subagent_run':
-      detail = `${b.subagentBadge(args.subagent || '')} ${colors.dim}→${colors.reset} ${colors.butterPale}${args.task?.slice(0, 50) || ''}${colors.reset}`;
+      detail = `${b.subagentBadge(str('subagent'))} ${colors.dim}→${colors.reset} ${colors.butterPale}${str('task').slice(0, 50)}${colors.reset}`;
       break;
     case 'generate_image':
-      detail = `${colors.italic}${colors.butterPale}"${args.prompt?.slice(0, 50) || ''}"${colors.reset}`;
+      detail = `${colors.italic}${colors.butterPale}"${str('prompt').slice(0, 50)}"${colors.reset}`;
       break;
     default:
       detail = JSON.stringify(args).slice(0, 60);
@@ -326,7 +338,7 @@ export function formatClaudeToolCall(name: string, args: Record<string, any>, du
   }
 }
 
-export function formatClaudeToolResult(output: string, isError = false, durationMs?: number): string {
+export function formatToolResult(output: string, isError = false, durationMs?: number): string {
   const icon = isError ? `${colors.red}✖ Error: ${colors.reset}` : `${colors.green}└─ ✔ ${colors.reset}`;
   const firstLine = output.trim().split('\n')[0] || '(empty)';
   const preview = isError
@@ -970,53 +982,32 @@ export class BeurreWorkingBar {
     }
   }
 
-  setTool(name: string, args: Record<string, any>, elapsedSec?: number): void {
-    let icon = '';
-    let detail = '';
-    switch (name) {
-      case 'bash':
-        icon = '';
-        detail = args.command ? `bash: ${args.command}` : 'bash';
-        break;
-      case 'read':
-        icon = '';
-        detail = args.path ? `read: ${args.path}` : 'read';
-        break;
-      case 'write':
-        icon = '';
-        detail = args.path ? `write: ${args.path}` : 'write';
-        break;
-      case 'edit':
-        icon = '';
-        detail = args.path ? `edit: ${args.path}` : 'edit';
-        break;
-      case 'web_search':
-        icon = '';
-        detail = args.query ? `web search: "${args.query}"` : 'web search';
-        break;
-      case 'subagent_run':
-        icon = '';
-        detail = args.subagent ? `subagent ${args.subagent}` : 'subagent';
-        break;
-      case 'generate_image':
-        icon = '';
-        detail = args.prompt ? `image: "${args.prompt.slice(0, 30)}"` : 'image';
-        break;
-      default:
-        icon = '●';
-        detail = name;
-        break;
-    }
+  setTool(name: string, args: Record<string, unknown>, elapsedSec?: number): void {
+    // Tool arguments arrive as untrusted JSON from the model, so every field is
+    // narrowed through one guard rather than asserted to a type it may not have.
+    const str = (key: string) => {
+      const v = args[key];
+      return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
+    };
+    const label: Record<string, string> = {
+      bash: `bash: ${str('command')}`,
+      read: `read: ${str('path')}`,
+      write: `write: ${str('path')}`,
+      edit: `edit: ${str('path')}`,
+      web_search: `web search: "${str('query')}"`,
+      subagent_run: `subagent ${str('subagent')}`,
+      generate_image: `image: "${str('prompt').slice(0, 30)}"`,
+    };
+    const detail = label[name] ?? name;
     this.currentPhase = 'tool';
-    this.customIcon = icon;
+    // A known tool has its own glyph from the caller; an unknown one gets a
+    // neutral dot rather than a wrong icon.
+    this.customIcon = label[name] ? '' : '●';
     this.phaseDetail = detail;
-    if (elapsedSec !== undefined && elapsedSec > 0) {
-      this.phaseStartTime = Date.now() - Math.round(elapsedSec * 1000);
-      this.statusText = `Executing ${detail} (${elapsedSec.toFixed(1)}s)...`;
-    } else {
-      this.phaseStartTime = Date.now();
-      this.statusText = `Executing ${detail}...`;
-    }
+    this.phaseStartTime = Date.now() - Math.round((elapsedSec ?? 0) * 1000);
+    this.statusText = elapsedSec !== undefined && elapsedSec > 0
+      ? `Executing ${detail} (${elapsedSec.toFixed(1)}s)...`
+      : `Executing ${detail}...`;
     if (this.isTTY && this.barDrawn) {
       this.updateStatusLineInPlace();
     }
