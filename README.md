@@ -74,18 +74,50 @@ Within the interactive REPL (`beurre`):
 
 | Command | Description |
 |---|---|
-| `/help` | Display command cheat sheet |
+| **General** | |
+| `/thinking [mode]` | Show the last reasoning block, or set how thinking is displayed |
+| `/quit` | Exit Beurre |
+| `/help` | Display the full command cheat sheet |
+| `/menu` | Searchable command palette |
+| `/clear` | Clear the screen, keeping the session |
+| `/new [model]` | Start a fresh session |
+| `/exit` | Exit Beurre |
+| `/copy` | Copy the last assistant response |
+| `/diff` | Show diffs from the last turn |
+| `/undo` | Drop the last exchange |
+| **Model & effort** | |
 | `/models` | Browse live models from the Relay Gateway |
 | `/providers` | View live upstream provider statuses |
 | `/model <id>` | Switch the active model on the fly |
+| `/effort` | Cycle the reasoning effort level |
+| **Diagnostics** | |
+| `/doctor` | Check cwd, git, config, write access, width and colour |
+| `/history` | Alias for `/stats` |
+| `/stats` | Session stats: turns, tool calls, thinking, tokens, spend |
+| `/env` | Show the environment the model is told about |
+| `/tools` | List the tools the model can call |
+| `/test` | Detect and run the project's test command |
+| `/outline [path]` | Structural outline of a file or directory |
+| `/grep <text>` | Literal search across the workspace |
+| **Workflow** | |
+| `/init` | Survey the repo and produce a grounded onboarding brief |
+| `/checkpoint [id]` | List checkpoints, or restore one by id |
+| `/snippet <name> add\|rm <text>` | Save and reuse prompts |
+| **Sessions & cloud** | |
+| `/sessions` | List your cloud sessions |
+| `/resume <id>` | Resume a session from the cloud |
+| `/sync` | Force sync the active session to the cloud |
+| `/whoami` | Show the active account, role and daily quota |
+| `/quota` | Inspect daily token usage and account tier |
+| `/usage` | Show token breakdown |
+| `/login [user] [pass]` | Sign in to your Relay account |
+| `/logout` | Sign out |
+| **Agents** | |
 | `/subagents` | List native named subagents and model personas |
-| `/subagent <name> <task>` | Dispatch a task directly to a named subagent |
-| `/loop <prompt>` | Start continuous prompt repeating loop |
+| `/subagent <name> <task>` | Dispatch a task to a named subagent |
+| `/loop <prompt>` | Start a continuous prompt repeating loop |
 | `/compact` | Melt & compact conversation history |
-| `/sync` | Sync session to Model Aggregator web app |
-| `/history` | Show session message stats |
-| `/clear` | Clear screen |
-| `/exit` | Exit Beurre |
+| `/export <path>` | Export the transcript |
 
 ---
 

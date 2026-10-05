@@ -2,6 +2,7 @@ import readline from 'node:readline';
 import { colors, b, getGitStatus } from './theme.ts';
 import { SLASH_COMMANDS, getPredictiveMatches, type SlashCommandInfo } from './predictive.ts';
 import { getModelDisplayName } from './relay.ts';
+import { columns, fit, padTo, stringWidth, truncate } from './layout.ts';
 
 export interface EditorPromptOptions {
   promptText?: string;
@@ -222,28 +223,32 @@ export function handleKeyStroke(
       return { state: s, action: 'none' };
     }
 
-    // If autocomplete is visible, complete command or submit directly
+    // If autocomplete is visible, complete command or submit directly.
+    // A command that already has arguments typed submits verbatim: completing
+    // here would silently discard everything after the command name.
     if (s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
       const selected = s.autocompleteMatches[s.selectedAutocompleteIdx];
-      if (selected) {
+      const hasArgs = s.buffer.includes(' ');
+      if (selected && !hasArgs) {
         if (!selected.argsHint || s.buffer === selected.command) {
           s.buffer = selected.command;
           s.autocompleteMatches = [];
           return { state: s, action: 'submit', submittedValue: selected.command };
-        } else {
-          s.buffer = selected.command + ' ';
-          s.cursor = s.buffer.length;
-          s.autocompleteMatches = [];
-          return { state: s, action: 'none' };
         }
+        s.buffer = selected.command + ' ';
+        s.cursor = s.buffer.length;
+        s.autocompleteMatches = [];
+        return { state: s, action: 'none' };
       }
     }
 
     return { state: s, action: 'submit', submittedValue: s.buffer };
   }
 
-  // Space key: If user typed slash command prefix, auto-correct to the selected match!
-  if (keyStr === ' ' && s.buffer.startsWith('/') && s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
+  // Space key: If user typed slash command prefix, auto-correct to the selected
+  // match. Guarded on "no args typed yet" — otherwise `/grep foo bar` loses
+  // `foo` the moment a space is pressed after it.
+  if (keyStr === ' ' && s.buffer.startsWith('/') && !s.buffer.includes(' ') && s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
     const selected = s.autocompleteMatches[s.selectedAutocompleteIdx];
     if (selected) {
       s.buffer = selected.command + ' ';
@@ -255,7 +260,8 @@ export function handleKeyStroke(
 
   // Tab
   if (keyStr === '\t') {
-    if (s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
+    // Same guard as Enter/Space: never clobber arguments already typed.
+    if (!s.buffer.includes(' ') && s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
       const selected = s.autocompleteMatches[s.selectedAutocompleteIdx];
       if (selected) {
         s.buffer = selected.command + (selected.argsHint ? ' ' : '');
@@ -528,7 +534,7 @@ export class BeurreEditor {
   async readPrompt(options: EditorPromptOptions = {}): Promise<string> {
     const isTTY = Boolean(process.stdin.isTTY && process.stdout.isTTY);
     if (!isTTY) {
-      return this.readPromptFallback(options.promptText ?? '🧈 beurre > ');
+      return this.readPromptFallback(options.promptText ?? '> ');
     }
 
     return new Promise<string>((resolve) => {
@@ -584,29 +590,13 @@ export class BeurreEditor {
         const coords = getBuffer2DCoords(state.buffer, state.cursor);
         const isMultiLine = lines.length > 1;
 
+        // One line of a box: fit to the inner width, pad, and frame. The old
+        // version hand-rolled an ANSI-aware scanner to do this and used
+        // stripAnsi().length, which miscounts wide characters.
         const formatBoxLine = (content: string, borderColor = colors.mutedBox): string => {
           const maxInner = Math.max(10, cols - 4);
-          const visualLen = stripAnsi(content).length;
-          let text = content;
-          if (visualLen > maxInner) {
-            let cur = 0;
-            let out = '';
-            let inEsc = false;
-            for (let i = 0; i < content.length; i++) {
-              if (content[i] === '\x1b') inEsc = true;
-              if (!inEsc) cur++;
-              if (cur > maxInner - 1) {
-                out += '…\x1b[0m';
-                break;
-              }
-              out += content[i];
-              if (inEsc && (content[i] === 'm' || content[i] === 'K')) inEsc = false;
-            }
-            text = out;
-          }
-          const curLen = stripAnsi(text).length;
-          const pad = Math.max(0, maxInner - curLen);
-          return `${borderColor}│${colors.reset} ${text}${' '.repeat(pad)} ${borderColor}│${colors.reset}`;
+          const text = fit(content, maxInner);
+          return `${borderColor}│${colors.reset} ${text} ${borderColor}│${colors.reset}`;
         };
 
         // Ghost text for completion on line 0
@@ -648,7 +638,8 @@ export class BeurreEditor {
           const promptPrefix = `${colors.butterGold}${colors.bold}>${colors.reset} `;
           const isBufferEmpty = state.buffer === '';
           if (isBufferEmpty) {
-            const placeholder = `${colors.darkGray}Type a prompt or / for commands (Shift+Enter newline)${colors.reset}`;
+            const hint = cols >= 56 ? 'Type a prompt or / for commands (Shift+Enter newline)' : 'Type a prompt or / for commands';
+            const placeholder = `${colors.darkGray}${truncate(hint, Math.max(4, cols - 3))}${colors.reset}`;
             drawnLines.push(`${promptPrefix}${placeholder}`);
           } else {
             const ghost = `${colors.dim}${ghostText}${colors.reset}`;
@@ -657,65 +648,30 @@ export class BeurreEditor {
 
           drawnLines.push(`${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`);
 
-          // Bottom status line with responsive compaction
-          let leftStatus = `${colors.dim}esc to cancel  •  tab complete  •  shift+tab effort${colors.reset}`;
+          // Bottom status line. The old version hand-rolled a seven-step ladder
+          // of if-blocks and, as a last resort, sliced the raw string — which
+          // cuts ANSI escapes in half and corrupts the terminal. `columns()`
+          // already fits both halves to the width, so there is no ladder.
           const modelName = options.model ? getModelDisplayName(options.model) : 'Beurre';
           const effortTag = currentEffort.toLowerCase();
-          const quotaTag = options.quotaText ? `${colors.cyan}${options.quotaText}${colors.reset}` : '';
-          const userTag = options.user ? `${colors.butterCream}${options.user}${colors.reset}` : '';
-
-          let rightParts = [userTag, modelName, effortTag, quotaTag].filter(Boolean);
-          let rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
-
-          let leftLen = stripAnsi(leftStatus).length;
-          let rightLen = stripAnsi(rightStatus).length;
-
-          if (leftLen + rightLen + 2 > cols) {
-            leftStatus = `${colors.dim}esc cancel  •  tab  •  shift+tab effort${colors.reset}`;
-            leftLen = stripAnsi(leftStatus).length;
-          }
-
-          if (leftLen + rightLen + 2 > cols) {
-            rightParts = [modelName, effortTag, quotaTag].filter(Boolean);
-            rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
-            rightLen = stripAnsi(rightStatus).length;
-          }
-
-          if (leftLen + rightLen + 2 > cols) {
-            leftStatus = `${colors.dim}esc cancel  •  tab${colors.reset}`;
-            leftLen = stripAnsi(leftStatus).length;
-          }
-
-          if (leftLen + rightLen + 2 > cols) {
-            rightParts = [modelName, effortTag].filter(Boolean);
-            rightStatus = rightParts.join(` ${colors.dim}·${colors.reset} `);
-            rightLen = stripAnsi(rightStatus).length;
-          }
-
-          if (leftLen + rightLen + 2 > cols) {
-            leftStatus = `${colors.dim}esc cancel${colors.reset}`;
-            leftLen = stripAnsi(leftStatus).length;
-          }
-
-          if (leftLen + rightLen + 2 > cols) {
-            rightParts = [modelName];
-            rightStatus = rightParts.join('');
-            rightLen = stripAnsi(rightStatus).length;
-          }
-
-          if (leftLen + rightLen + 2 > cols) {
-            const maxModelLen = Math.max(3, cols - leftLen - 3);
-            const shortModel = modelName.length > maxModelLen ? modelName.slice(0, maxModelLen - 1) + '…' : modelName;
-            rightStatus = shortModel;
-            rightLen = stripAnsi(rightStatus).length;
-          }
-
-          const padStatus = Math.max(1, cols - leftLen - rightLen);
-          let footerLine = `${leftStatus}${' '.repeat(padStatus)}${rightStatus}`;
-          if (stripAnsi(footerLine).length > cols) {
-            footerLine = footerLine.slice(0, cols);
-          }
-          drawnLines.push(footerLine);
+          const rightStatus = [options.user, modelName, effortTag, options.quotaText]
+            .filter(Boolean)
+            .join(` ${colors.dim}·${colors.reset} `);
+          const hintFor = (width: number): string => {
+            const full = ['esc to cancel', 'tab complete', 'shift+tab effort'];
+            const short = ['esc', 'tab', 'shift+tab'];
+            // Drop hints from the right until the row fits, then shorten them.
+            for (let n = full.length; n > 0; n--) {
+              const row = columns(
+                `${colors.dim}${full.slice(0, n).join('  •  ')}${colors.reset}`,
+                rightStatus,
+                cols,
+              );
+              if (stringWidth(row) <= width) return row;
+            }
+            return columns(`${colors.dim}${short.join(' • ')}${colors.reset}`, rightStatus, cols);
+          };
+          drawnLines.push(hintFor(cols));
 
           targetRow = 1;
           targetCol = 3 + coords.colIdx;
@@ -734,16 +690,24 @@ export class BeurreEditor {
             }
 
             const visibleMatches = state.autocompleteMatches.slice(scrollOffset, scrollOffset + maxDisplay);
-            const countTag = `[${state.selectedAutocompleteIdx + 1}/${totalMatches}]`;
-            const popupHeader = `╭─ Commands ${countTag} (Tab/Space complete, ↑/↓ scroll, Shift+Tab effort) `;
-            const fillLen = Math.max(0, cols - popupHeader.length - 1);
-            drawnLines.push(`${colors.mutedBox}${popupHeader}${'─'.repeat(fillLen)}╮${colors.reset}`);
-
-            if (scrollOffset > 0) {
-              const moreAbove = `    ${colors.dim}▲ ${scrollOffset} more commands above (use ↑ to scroll)...${colors.reset}`;
-              drawnLines.push(formatBoxLine(moreAbove, colors.mutedBox));
-            }
-
+            const inner = Math.max(12, cols - 2);
+            const countTag = ` [${state.selectedAutocompleteIdx + 1}/${totalMatches}]`;
+            // The header used to hardcode its hint text and pad the fill with a
+            // count taken from the ANSI-bearing string, so it wrapped mid-word
+            // on any terminal under ~80 columns.
+            const head = truncate(
+              `${colors.mutedBox}╭─${colors.reset} ${colors.bold}Commands${colors.reset}${colors.dim}${countTag}${colors.reset}`,
+              inner,
+            );
+            drawnLines.push(`${head} ${colors.mutedBox}${'─'.repeat(Math.max(0, inner - stringWidth(head) - 1))}╮${colors.reset}`);
+            // Reserve a fixed label column so descriptions form a clean left
+            // edge; `columns()` right-aligns its second half, which ragged
+            // every description at wide widths.
+            const labelCol = Math.min(
+              Math.max(12, ...visibleMatches.map((m) => stringWidth(m.command) + (m.argsHint ? m.argsHint.length + 1 : 0))),
+              Math.floor(inner * 0.5),
+            );
+            const descCol = inner - labelCol - 2;
             visibleMatches.forEach((m, idx) => {
               const actualIdx = scrollOffset + idx;
               const isSelected = actualIdx === state.selectedAutocompleteIdx;
@@ -752,20 +716,15 @@ export class BeurreEditor {
               const cmdText = isSelected
                 ? `${colors.bold}${colors.butterGold}${m.command}${colors.reset}${hint}`
                 : `${colors.bold}${colors.butterCream}${m.command}${colors.reset}${hint}`;
-
-              const descText = `${colors.gray}• ${m.description}${colors.reset}`;
-              const visibleCmdLen = stripAnsi(cmdText).length;
-              const padCmd = Math.max(1, 26 - visibleCmdLen);
-              const lineContent = `  ${pointer} ${cmdText}${' '.repeat(padCmd)} ${descText}`;
-              drawnLines.push(formatBoxLine(lineContent, colors.mutedBox));
+              const label = padTo(cmdText, labelCol);
+              drawnLines.push(formatBoxLine(`  ${pointer} ${label}  ${truncate(m.description, descCol)}`, colors.mutedBox));
             });
 
             if (scrollOffset + maxDisplay < totalMatches) {
               const remaining = totalMatches - (scrollOffset + maxDisplay);
-              const moreLine = `    ${colors.dim}▼ ${remaining} more commands below (use ↓ to scroll)...${colors.reset}`;
-              drawnLines.push(formatBoxLine(moreLine, colors.mutedBox));
+              drawnLines.push(formatBoxLine(truncate(`    ${colors.dim}▼ ${remaining} more below${colors.reset}`, inner), colors.mutedBox));
             }
-            drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}`);
+            drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(inner)}╯${colors.reset}`);
           }
         }
 

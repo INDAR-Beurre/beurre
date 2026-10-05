@@ -25,13 +25,13 @@ export class BeurreLoopRunner {
 
     const onSigInt = () => {
       activeWorkingBar?.stop();
-      console.log(`\n${b.melt('🧈')} ${b.gold('Loop interrupted by user (Ctrl+C). Saving butter state and stopping...')}`);
+      console.log(`\n${b.gold('Loop interrupted by user (Ctrl+C). Saving butter state and stopping...')}`);
       this.stop();
     };
 
     process.on('SIGINT', onSigInt);
 
-    console.log(`\n${colors.bgButterMelt}${colors.bold} 🧈 BEURRE PROMPT LOOP STARTED ${colors.reset}`);
+    console.log(`\n${colors.bgButterMelt}${colors.bold} BEURRE PROMPT LOOP STARTED ${colors.reset}`);
     console.log(`${b.cream('Repeating prompt:')} ${b.gold(prompt)}`);
     console.log(`${b.dim('Loop will repeat indefinitely until Ctrl+C. Context auto-compacts each turn.')}\n`);
 
@@ -39,7 +39,7 @@ export class BeurreLoopRunner {
       while (this.isRunning && this.currentIteration < max) {
         this.currentIteration++;
 
-        const iterHeader = `🧈 ─── [Loop Iteration #${this.currentIteration}] ──────────────────────────────────────────`;
+        const iterHeader = `[Loop Iteration #${this.currentIteration}]`;
         console.log(`\n${b.gold(iterHeader)}`);
 
         let hasTokens = false;
@@ -103,7 +103,7 @@ export class BeurreLoopRunner {
                 if (!hasTokens) {
                   renderThinkingIfNeeded();
                   hasTokens = true;
-                  workingBar.writeAbove(`\n${b.gold('🧈')} `);
+                  workingBar.writeAbove('\n');
                 }
                 streamHighlighter.feed(tok);
               },
@@ -144,7 +144,7 @@ export class BeurreLoopRunner {
         }
         activeWorkingBar = null;
 
-        console.log(`\n${b.green('🧈 Iteration #' + this.currentIteration + ' finished.')}`);
+        console.log(`\n${b.green('Iteration #' + this.currentIteration + ' finished.')}`);
 
         if (!this.isRunning) break;
 
@@ -158,7 +158,7 @@ export class BeurreLoopRunner {
         const afterCount = agent.getMessages().length;
 
         console.log(
-          `${b.melt('🧈 Butter Melt Compactor:')} Message turns condensed from ${b.gold(beforeCount)} -> ${b.gold(afterCount)} (Memory preserved).`
+          `${b.melt('Butter Melt Compactor:')} Message turns condensed from ${b.gold(beforeCount)} -> ${b.gold(afterCount)} (Memory preserved).`
         );
 
         if (this.currentIteration < max && this.isRunning) {

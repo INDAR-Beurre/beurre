@@ -15,7 +15,7 @@ import { formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts
 
 function printHelp(): void {
   console.log(`
-${b.gold('🧈 BEURRE — A minimalist, butter-themed agentic CLI harness')}
+${b.gold('BEURRE - A minimalist agentic CLI')}
 ${b.dim('Integrated with Model Aggregator & Cloudflare Relay Gateway')}
 
 ${b.bold('USAGE:')}
@@ -32,11 +32,11 @@ ${b.bold('OPTIONS:')}
   -v, --version              Show version
 
 ${b.bold('EXAMPLES:')}
-  beurre                                            # Launch interactive butter REPL
-  beurre "Inspect package.json and summarize"      # Run single task headless
-  beurre -p "Check tests and fix errors" --loop    # Run indefinite continuous loop
-  beurre --models                                   # Show all active relay models
-  beurre --subagents                                # Show named subagent personas
+  beurre                                          # Launch the interactive REPL
+  beurre "Inspect package.json and summarize"     # Run a single task headless
+  beurre -p "Check tests and fix errors" --loop    # Run an indefinite continuous loop
+  beurre --models                                 # Show all active relay models
+  beurre --subagents                              # Show named subagent personas
 `);
 }
 
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     }
 
     if (arg === '-v' || arg === '--version') {
-      console.log(`beurre v1.0.0 (🧈 fondant & autonome)`);
+      console.log('beurre v1.0.0');
       process.exit(0);
     }
 
@@ -72,10 +72,10 @@ async function main(): Promise<void> {
       try {
         const models = await relay.fetchLiveModels();
         spinner.stop();
-        console.log(`\n${b.gold('🧈 LIVE RELAY MODELS')} (${models.length} available):\n`);
+        console.log(`\n${b.gold('LIVE RELAY MODELS')} (${models.length} available):\n`);
         for (const m of models) {
           const tags = [];
-          if (m.reasoning) tags.push('🧠 reasoning');
+          if (m.reasoning) tags.push('reasoning');
           if (m.context_length) tags.push(`${Math.round(m.context_length / 1000)}k ctx`);
           if (m.owned_by) tags.push(`by: ${m.owned_by}`);
           console.log(`  • ${b.bold(m.id.padEnd(28))} ${b.dim(tags.join(' | '))}`);
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
       try {
         const provs = await relay.fetchProviders();
         spinner.stop();
-        console.log(`\n${b.gold('🧈 UPSTREAM PROVIDERS')} (${provs.length} configured):\n`);
+        console.log(`\n${b.gold('UPSTREAM PROVIDERS')} (${provs.length} configured):\n`);
         for (const p of provs) {
           const status = p.live ? b.green('● LIVE') : b.red('○ DOWN');
           console.log(`  ${status} ${b.bold(p.name.padEnd(20))} ${b.dim(`${p.models || 0} models`)}`);
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
 
     if (arg === '--subagents') {
       const subs = listSubagents();
-      console.log(`\n${b.gold('🧈 NATIVE NAMED SUBAGENTS')} (Each with designated persona & model ID):\n`);
+      console.log(`\n${b.gold('NATIVE NAMED SUBAGENTS')} (Each with designated persona & model ID):\n`);
       for (const s of subs) {
         console.log(`  ${b.subagentBadge(s.name)} ${b.dim(`[Model: ${s.modelId}]`)}`);
         console.log(`    Role: ${b.cream(s.role)}`);
@@ -154,7 +154,7 @@ async function main(): Promise<void> {
   // If single headless prompt
   if (prompt) {
     const agent = new BeurreAgent({ model: selectedModel });
-    console.log(`${b.gold('🧈 Beurre')} ${b.dim(`[${agent.getModel()}]`)}: Running task...`);
+    console.log(`${b.gold('Beurre')} ${b.dim(`[${agent.getModel()}]`)}: Running task...`);
 
     const spinner = new ButterSpinner();
     spinner.start('Thinking...');
@@ -187,7 +187,7 @@ async function main(): Promise<void> {
             spinner.stop();
             renderThinkingIfNeeded();
             hasTokens = true;
-            process.stdout.write(`${b.gold('🧈')} `);
+            process.stdout.write(`${b.gold('Beurre:')} `);
           }
           streamHighlighter.feed(tok);
         },
@@ -225,12 +225,38 @@ async function main(): Promise<void> {
       spinner.stop();
     }
 
-    console.log(`\n${b.green('🧈 Task finished.')}`);
+    console.log(`\n${b.green('Task finished.')}`);
     return;
   }
 
-  // Default: start interactive Butter REPL
+  // Piped stdin with no -p: treat the piped text as the prompt. Without this
+  // `echo "fix the bug" | beurre` printed the banner and exited 0, silently
+  // doing nothing — the worst possible failure mode for a script.
+  if (!process.stdin.isTTY) {
+    const piped = await readStdin().then((s) => s.trim()).catch(() => '');
+    if (piped) {
+      process.argv.push('-p', piped);
+      await main();
+      return;
+    }
+    console.error(`${b.red('Error:')} No prompt given and stdin was empty.`);
+    console.error(`Pipe a prompt (echo "task" | ${b.gold('beurre')}) or pass ${b.gold('-p "task"')}.`);
+    process.exit(1);
+  }
+
   await startRepl(selectedModel);
+}
+
+/** Read all of stdin. Resolves to '' when stdin is a TTY or closed. */
+function readStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = '';
+    process.stdin.setEncoding('utf-8');
+    process.stdin.on('data', (c: string) => (data += c));
+    process.stdin.on('end', () => resolve(data));
+    process.stdin.on('error', () => resolve(data));
+    process.stdin.resume();
+  });
 }
 
 main().catch((err) => {

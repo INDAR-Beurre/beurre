@@ -1,4 +1,5 @@
-import { colors, b } from './theme.ts';
+import { colors } from './theme.ts';
+import { box, termWidth } from './layout.ts';
 
 export interface DiffHunk {
   oldStart: number;
@@ -218,16 +219,12 @@ export function generateDiffCard(
   }
 
   // Format into a beautiful card
-  const cols = Math.min(process.stdout.columns || 80, 80);
-  const title = ` 📝 Diff: ${filePath} (+${additions}/-${deletions}) `;
-  const borderLen = Math.max(0, cols - title.length - 3);
-
+  const title = `${colors.bold}${colors.butterGold}Diff: ${filePath} (+${additions}/-${deletions})${colors.reset}`;
   const cardLines: string[] = [];
-  cardLines.push(`${colors.butterMelt}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterMelt}${'─'.repeat(borderLen)}╮${colors.reset}`);
 
   for (const hunk of hunks) {
     const hunkHeader = `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`;
-    cardLines.push(`${colors.butterMelt}│${colors.reset} ${colors.cyan}${hunkHeader}${colors.reset}`);
+    cardLines.push(`${colors.cyan}${hunkHeader}${colors.reset}`);
 
     for (const l of hunk.lines) {
       let formattedLine = '';
@@ -238,11 +235,11 @@ export function generateDiffCard(
       } else {
         formattedLine = `${colors.dim}${l}${colors.reset}`;
       }
-      cardLines.push(`${colors.butterMelt}│${colors.reset} ${formattedLine}`);
+      cardLines.push(formattedLine);
     }
   }
 
-  cardLines.push(`${colors.butterMelt}╰${'─'.repeat(cols - 2)}╯${colors.reset}`);
+
 
   return {
     filePath,
@@ -250,6 +247,6 @@ export function generateDiffCard(
     additions,
     deletions,
     hunks,
-    formatted: cardLines.join('\n'),
+    formatted: box({ title, lines: cardLines, width: termWidth() }).join('\n'),
   };
 }

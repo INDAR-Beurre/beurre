@@ -58,7 +58,7 @@ export function compactMessages(messages: ChatMessage[], options: CompactOptions
   const iterLabel = options.iteration !== undefined ? ` #${options.iteration}` : '';
 
   const lines: string[] = [
-    `🧈 [BEURRE CONTEXT MELT — COMPACTED SESSION ROLLUP${iterLabel}]`,
+    `[BEURRE CONTEXT MELT - COMPACTED SESSION ROLLUP${iterLabel}]`,
     isLoop
       ? `Previous loop iteration${iterLabel} finished. Context has been compacted to preserve memory.`
       : `Conversation context has been compacted to preserve memory.`,

@@ -192,6 +192,34 @@ All tests must pass with **100% green status** (0 failures).
 
 > **AI AGENT INSTRUCTION:** Append all future changes to this section in reverse chronological order.
 
+### [2026-10-05] — Layout System, Command Palette, Argument-Preservation Fix & 10 New Features
+- **Author/Agent:** Beurre Production Readiness Pass
+- **New Modules:**
+  1. `src/layout.ts` — single source of truth for terminal geometry: `stripAnsi`, `stringWidth`, `termWidth`, `truncate`, `padTo`, `fit`, `columns`, `box`, `rule`, `listWindow`, `colorEnabled`. Every rendered line is now guaranteed `<= termWidth()`; no surface slices a string containing ANSI escapes any more (that split escape sequences and corrupted the terminal).
+  2. `src/overlay.ts` — `Overlay` (paint/erase), `parseKey`, `readKey` for safe interactive surfaces.
+  3. `src/features.ts` — 26 exports backing 10 new slash commands.
+- **Bugs Fixed at the Root Cause:**
+  1. **Argument-discarding in the editor (`src/editor.ts`)** — the Enter, Space and Tab handlers all overwrote `s.buffer` with the selected autocomplete match. Typing `/outline src/features.ts` and pressing Enter silently submitted just `/outline` and dropped the argument. All three handlers are now guarded on "no args typed yet"; typed arguments always win over completion.
+  2. **`/init` never ran (`src/repl.ts`)** — it printed the generated survey and hit `continue`, which skips turn execution, stranding the user with an empty editor. Added a `runTurn` channel so a slash command can synthesise a prompt that the turn runner executes.
+  3. **Resume overstated token usage (`src/repl.ts`)** — cloud session resume summed the *entire* history including the system prompt (re-sent every turn) and overwrote the running total. Now seeded from the transcript only, keeping usage monotonic.
+  4. **`/test` ran the wrong command (`src/features.ts`)** — detection hardcoded `npm test` regardless of the package script. It now reads `scripts.test` and picks `bun`/`yarn`/`pnpm`/`npm` accordingly, and detects `pytest.ini` too.
+  5. **`/snippet rm` left a blank entry** instead of deleting; added `removeSnippet` returning whether anything was removed.
+  6. **`renderDoctor`/`renderOutline` fed `box()` a single joined string**, which the box collapsed to one truncated line. Both now return `string[]`.
+  7. **Hardcoded live API key removed (`src/config.ts`)** — `apiKey: 'sk-…'` was committed. Now empty by default, resolved from `RELAY_API_KEY` → `~/.beurre/config.json` → `~/.omp/agent/models.yml`.
+  8. **Piped stdin was ignored (`src/index.ts`)** — `echo "task" | beurre` dumped the banner and exited 0. It now reads stdin and re-enters the REPL with `-p`, erroring loudly on empty input.
+  9. **`/menu` forked `git status` on every keypress** and exited after an action; rewritten as a searchable palette that resolves only the highlighted row and returns to the prompt.
+  10. **Model picker and autocomplete raggeded their descriptions** — `columns()` right-aligns its second argument, so it is wrong for two aligned text columns. Both now use a fixed label column plus `padTo`.
+  11. **`NO_COLOR` was ignored by `theme.ts`**; colour is now gated through `colorEnabled()` (verified: 0 escape sequences under `NO_COLOR=1`).
+- **UI/UX Rework:**
+  - Deleted the block-glyph ASCII logo and the emoji iconography set. Replaced with typographic design: weight, alignment and rules. `✔`/`✖`/`❯` are retained as status marks.
+  - Banner reduced from ~11 rows to 9, width-fitted at every terminal size.
+  - Added a one-time `Welcome` panel for first-run onboarding (`~/.beurre/seen-onboarding`); repeat chrome is what makes a tool feel broken.
+- **10 New Features:** `/doctor`, `/stats`, `/price`, `/env`, `/tools`, `/test`, `/outline`, `/grep`, `/init`, `/checkpoint`, `/snippet`.
+- **Commands:** 27 → 39 registered, every one both dispatched and documented in `README.md` (verified by cross-check).
+- **Deleted Dead Code:** `statusBar`/`StatusBarOptions`, `butterBox`, `getBeurreLogo`, `claudePromptHeader`, four unreferenced butter-stripping regexes.
+- **Tests:** 178 pass / 0 fail across 17 files (`tests/features.test.ts`, `tests/layout.test.ts`, `tests/overlay.test.ts` added). Two obsolete butter-stripping tests were rewritten to assert real behaviour; two stale assertions were corrected.
+- **Note:** The previously committed key `sk-0g9MKSh-…` remains in git history at `41c22fc` and must be rotated.
+
 ### [2026-10-04] — Steering Bar Robustness, Sliding Window Cursor Positioning, Bracketed Paste & Strict Role Alternation
 - **Author/Agent:** Antigravity / Beurre Engineering Review & Fix Agent
 - **Issues Identified in Prior Attempt & Fixed:**

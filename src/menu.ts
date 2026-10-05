@@ -4,21 +4,28 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { BeurreAgent } from './agent.ts';
 import { relay, getModelDisplayName } from './relay.ts';
-import { listSubagents, runNamedSubagent } from './subagents.ts';
+import { listSubagents } from './subagents.ts';
 import { compactMessages } from './compact.ts';
 import { BeurreLoopRunner } from './loop.ts';
 import { openModelPicker } from './model-picker.ts';
-import { b, colors, ButterSpinner, renderToast, getGitStatus } from './theme.ts';
+import { b, colors, renderToast } from './theme.ts';
+import { box, columns, fit, listWindow, stringWidth, termHeight, termWidth, truncate } from './layout.ts';
+
+import { Overlay, isCharKey, readKey } from './overlay.ts';
+export type MenuCategory = 'model' | 'agents' | 'workspace';
 
 export interface MenuItem {
   id: string;
-  category: 'model' | 'agents' | 'workspace';
-  icon: string;
+  category: MenuCategory;
   title: string;
-  actionHint: string;
   description: string;
   details: string[];
+  /** Short hint shown right-aligned on the row. */
+  hint: string;
+  /** Words matched by the palette's search filter. */
+  keywords?: string;
   getValue?: (agent: BeurreAgent, thinkingMode: string) => string;
+  run?: (ctx: MenuContext) => Promise<void>;
 }
 
 export interface MenuOptions {
@@ -26,550 +33,491 @@ export interface MenuOptions {
   onToggleThinking?: (mode: 'expanded' | 'collapsed' | 'hidden') => void;
 }
 
+/** Everything an item action needs, so handlers never close over the menu. */
+export interface MenuContext {
+  agent: BeurreAgent;
+  getThinkingMode: () => string;
+  setThinkingMode: (mode: 'expanded' | 'collapsed' | 'hidden') => void;
+}
+
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type Effort = (typeof EFFORTS)[number];
+
+const CATEGORY_LABELS: Record<MenuCategory, string> = {
+  model: 'Model & reasoning',
+  agents: 'Agents & automation',
+  workspace: 'Workspace',
+};
+
+// -------------------------------------------------------------- actions ----
+
+function prompt(question: string): Promise<string> {
+  const { promise, resolve } = Promise.withResolvers<string>();
+  process.stdout.write('\x1b[?25h');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  rl.question(question, (answer) => {
+    rl.close();
+    process.stdout.write('\x1b[?25l');
+    resolve(answer.trim());
+  });
+  return promise;
+}
+
+async function switchModel(ctx: MenuContext): Promise<void> {
+  await openModelPicker(ctx.agent.getModel(), (m) => ctx.agent.setModel(m));
+  console.log(
+    `\n${renderToast(`Model set to ${getModelDisplayName(ctx.agent.getModel())} (${ctx.agent.getModel()})`, true)}\n`,
+  );
+}
+
+function cycleEffort(ctx: MenuContext, dir = 1): void {
+  const i = EFFORTS.indexOf(ctx.agent.getEffort().toLowerCase() as Effort);
+  const next = EFFORTS[(i + dir + EFFORTS.length) % EFFORTS.length];
+  ctx.agent.setEffort(next);
+  console.log(`\n${renderToast(`Effort set to ${next}`, true)}\n`);
+}
+
+function cycleThinking(ctx: MenuContext): void {
+  const order = ['expanded', 'collapsed', 'hidden'] as const;
+  const next = order[(order.indexOf(ctx.getThinkingMode() as (typeof order)[number]) + 1) % order.length];
+  ctx.setThinkingMode(next);
+  console.log(`\n${renderToast(`Thinking blocks: ${next}`, true)}\n`);
+}
+
+async function showSubagents(): Promise<void> {
+  console.log('');
+  for (const s of listSubagents()) {
+    console.log(`  ${b.gold(s.name.padEnd(12))} ${b.cream(s.modelId)}`);
+    console.log(`  ${' '.repeat(12)} ${colors.gray}${truncate(s.role, Math.max(20, termWidth() - 20))}${colors.reset}`);
+  }
+  console.log(`\n${colors.dim}  Delegate with: /subagent <name> <task>${colors.reset}\n`);
+}
+
+async function startLoop(ctx: MenuContext): Promise<void> {
+  const loopPrompt = await prompt(`  ${b.gold('Prompt to repeat:')} `);
+  if (!loopPrompt) return;
+  const maxRaw = await prompt(`  ${b.gold('Iterations (blank = until interrupted):')} `);
+  const maxIterations = maxRaw ? Number.parseInt(maxRaw, 10) : undefined;
+  if (maxRaw && Number.isNaN(maxIterations)) {
+    console.log(`\n${renderToast(`Not a number: ${maxRaw}`, false)}\n`);
+    return;
+  }
+  await new BeurreLoopRunner().start(ctx.agent, loopPrompt, { maxIterations });
+}
+
+async function showDiff(ctx: MenuContext): Promise<void> {
+  try {
+    const out = execSync('git diff HEAD', { cwd: ctx.agent.getCwd(), encoding: 'utf-8', timeout: 5000 });
+    const lines = out.split('\n');
+    if (!out.trim()) {
+      console.log(`\n  ${b.green('Working tree clean.')}\n`);
+      return;
+    }
+    console.log('');
+    for (const line of lines.slice(0, 60)) {
+      if (line.startsWith('+++') || line.startsWith('---')) console.log(`  ${colors.dim}${line}${colors.reset}`);
+      else if (line.startsWith('+')) console.log(`  ${colors.green}${line}${colors.reset}`);
+      else if (line.startsWith('-')) console.log(`  ${colors.red}${line}${colors.reset}`);
+      else if (line.startsWith('@@')) console.log(`  ${colors.cyan}${line}${colors.reset}`);
+      else console.log(`  ${colors.gray}${line}${colors.reset}`);
+    }
+    if (lines.length > 60) console.log(`  ${colors.dim}… ${lines.length - 60} more lines${colors.reset}`);
+    console.log('');
+  } catch (err) {
+    console.log(`\n  ${b.red(`git diff failed: ${(err as Error).message}`)}\n`);
+  }
+}
+
+async function compactContext(ctx: MenuContext): Promise<void> {
+  const msgs = ctx.agent.getMessages();
+  if (msgs.length <= 2) {
+    console.log(`\n${renderToast('Nothing to compact yet.', true)}\n`);
+    return;
+  }
+  const compacted = compactMessages(msgs, { iteration: 1, isLoop: false });
+  ctx.agent.setMessages(compacted);
+  console.log(`\n${renderToast(`Compacted ${msgs.length} → ${compacted.length} messages`, true)}\n`);
+}
+
+async function exportSession(ctx: MenuContext): Promise<void> {
+  const target = path.join(ctx.agent.getCwd(), `beurre-${new Date().toISOString().slice(0, 10)}.md`);
+  const out = [`# beurre session ${new Date().toISOString()}`, ''];
+  for (const m of ctx.agent.getMessages()) {
+    if (m.role === 'user') out.push(`**you**`, '', m.content, '');
+    else if (m.role === 'assistant') out.push(`**${getModelDisplayName(ctx.agent.getModel())}**`, '', m.content, '');
+    else if (m.role === 'tool') out.push(`> ${m.name ?? 'tool'}: ${(m.content ?? '').slice(0, 300)}`, '');
+  }
+  fs.writeFileSync(target, out.join('\n'), 'utf-8');
+  console.log(`\n${renderToast(`Exported to ${target}`, true)}\n`);
+}
+
+async function showUsage(ctx: MenuContext): Promise<void> {
+  const msgs = ctx.agent.getMessages();
+  // Count assistant text into the assistant bucket, not the user bucket —
+  // the old version summed both into `userChars`, so the breakdown lied.
+  let userChars = 0;
+  let assistantChars = 0;
+  let toolChars = 0;
+  for (const m of msgs) {
+    const len = m.content?.length ?? 0;
+    if (m.role === 'user') userChars += len;
+    else if (m.role === 'assistant') assistantChars += len;
+    else if (m.role === 'tool') toolChars += len;
+  }
+  const total = Math.round((userChars + assistantChars + toolChars) / 4);
+  const width = termWidth();
+  const row = (k: string, v: string) => `  ${columns(`${colors.dim}${k}${colors.reset}`, v, width - 2)}`;
+
+  console.log('');
+  for (const l of box({
+    title: 'Session',
+    width: Math.min(width, 76),
+    lines: [
+      row('id', `${colors.dim}${ctx.agent.getSessionId()}${colors.reset}`),
+      row('model', `${b.gold(getModelDisplayName(ctx.agent.getModel()))} ${colors.dim}(${ctx.agent.getModel()})${colors.reset}`),
+      row('effort', b.gold(ctx.agent.getEffort())),
+      row('messages', b.cream(String(msgs.length))),
+      row('tokens', b.gold(`~${total.toLocaleString()}`)),
+      row('breakdown', colors.dim(`you ~${Math.round(userChars / 4)} · model ~${Math.round(assistantChars / 4)} · tools ~${Math.round(toolChars / 4)}`)),
+    ],
+  })) console.log(l);
+  console.log('');
+}
+
+function showHelp(): void {
+  const width = termWidth();
+  const row = (k: string, v: string) => `  ${columns(`${b.gold(k)}`, `${colors.dim}${v}${colors.reset}`, width - 2)}`;
+  console.log('');
+  for (const l of box({
+    title: 'Shortcuts',
+    width: Math.min(width, 76),
+    lines: [
+      '',
+      row('Enter', 'send · accept selection'),
+      row('Shift+Enter', 'new line'),
+      row('Shift+Tab', 'cycle reasoning effort'),
+      row('Tab', 'complete command'),
+      row('↑ ↓', 'history · navigate'),
+      row('Ctrl+C', 'interrupt turn'),
+      row('Esc', 'cancel · close'),
+      '',
+      row('/menu', 'this palette'),
+      row('/models', 'switch model'),
+      row('/help', 'this screen'),
+      row('/exit', 'quit'),
+    ],
+  })) console.log(l);
+  console.log('');
+}
+
+// ---------------------------------------------------------------- items ----
+
 export const MENU_ITEMS: MenuItem[] = [
-  // Category 1: MODEL & REASONING
   {
-    id: '1',
+    id: 'model',
     category: 'model',
-    icon: '🤖',
-    title: 'Active Model',
-    actionHint: '[Enter ↵] Browse',
-    description: 'Switch active model from Relay Gateway or change upstream provider.',
-    details: [
-      'Access 100+ frontier models via Relay Gateway (https://relay-gw.pages.dev).',
-      'Supports Claude Opus 5.5, Sonnet 3.5, GLM 5.3, Kimi K3, DeepSeek V3, and GPT-4o.',
-      'Action: Press [Enter] to open the interactive visual model navigator with live search.',
-    ],
-    getValue: (agent) => {
-      const disp = getModelDisplayName(agent.getModel());
-      return disp !== agent.getModel() ? `${disp} (${agent.getModel()})` : agent.getModel();
+    title: 'Model',
+    hint: 'change',
+    description: 'Choose the model that answers your prompts.',
+    details: ['Browse every model the Relay Gateway exposes, with context size and supported efforts.'],
+    keywords: 'llm switch picker choose brain',
+    getValue: (a) => {
+      const d = getModelDisplayName(a.getModel());
+      return d === a.getModel() ? a.getModel() : `${d} (${a.getModel()})`;
     },
+    run: switchModel,
   },
   {
-    id: '2',
+    id: 'effort',
     category: 'model',
-    icon: '⚡',
-    title: 'Reasoning Effort',
-    actionHint: '[Space ␣] Cycle',
-    description: 'Controls how deeply the model thinks before answering or generating code.',
-    details: [
-      'Adjusts reasoning tokens and thinking budget passed to the upstream model.',
-      'Available levels: LOW (fast) → MEDIUM → HIGH (default) → XHIGH → MAX (deep logic).',
-      'Action: Press [Space] or [Enter] to immediately cycle to the next effort level.',
-    ],
-    getValue: (agent) => agent.getEffort().toUpperCase(),
+    title: 'Reasoning effort',
+    hint: 'cycle',
+    description: 'How hard the model thinks before answering.',
+    details: ['low is fastest and cheapest. max is slowest and most thorough.'],
+    keywords: 'thinking tokens depth high low',
+    getValue: (a) => a.getEffort(),
+    run: (ctx) => cycleEffort(ctx),
   },
   {
-    id: '3',
+    id: 'thinking',
     category: 'model',
-    icon: '🧠',
-    title: 'Thinking Blocks',
-    actionHint: '[Space ␣] Toggle',
-    description: 'Configure how internal model reasoning traces are displayed in chat.',
-    details: [
-      'EXPANDED:  Full formatted thought card with timing and token count.',
-      'COLLAPSED: One-line summary badge with thinking duration (clean view).',
-      'HIDDEN:    Suppresses reasoning stream entirely, showing only the final answer.',
-      'Action: Press [Space] or [Enter] to toggle between Expanded, Collapsed, and Hidden.',
-    ],
-    getValue: (_, thinkingMode) => thinkingMode.toUpperCase(),
+    title: 'Thinking blocks',
+    hint: 'cycle',
+    description: 'Show or hide the model’s reasoning as it works.',
+    details: ['expanded shows full reasoning, collapsed shows a one-line summary, hidden shows none.'],
+    keywords: 'reasoning show hide expand',
+    getValue: (_a, mode) => mode,
+    run: cycleThinking,
   },
-
-  // Category 2: AUTONOMOUS WORKFLOWS
   {
-    id: '4',
+    id: 'subagents',
     category: 'agents',
-    icon: '👥',
-    title: 'Native Subagents',
-    actionHint: '[Enter ↵] Squad',
-    description: 'Delegate tasks to specialized autonomous personas with designated models.',
-    details: [
-      '• Architect (Claude 3.5 Sonnet)  - Architecture & multi-step plans',
-      '• CodeCraft (GLM 5.3)            - Clean implementation & surgical edits',
-      '• Reviewer (Claude Opus 5.5)     - Security, code quality & edge-case checks',
-      '• BugHunter (DeepSeek V3)        - Deep diagnostic & runtime debugging',
-      '• Scout (GLM 5.3 Flash)          - Lightning-fast codebase & dependency search',
-      '• Visionary (GPT-4o)             - UI/UX layout, SVG assets & image generation',
-      'Action: Press [Enter] to inspect the squad and dispatch a task directly.',
-    ],
-    getValue: () => `${listSubagents().length} specialists ready`,
+    title: 'Subagents',
+    hint: 'list',
+    description: 'Specialists you can hand a task to.',
+    details: ['Each subagent has its own model and instructions.'],
+    keywords: 'architect review scout delegate team',
+    getValue: () => `${listSubagents().length} available`,
+    run: showSubagents,
   },
   {
-    id: '5',
+    id: 'loop',
     category: 'agents',
-    icon: '🔁',
-    title: 'Autonomous Loop',
-    actionHint: '[Enter ↵] Launch',
-    description: 'Start a continuous prompt execution loop with automatic context compaction.',
-    details: [
-      'Repeats a designated prompt each time the agent completes an execution turn.',
-      'Context history is automatically melted and compacted between iterations to conserve tokens.',
-      'Ideal for test-driven refactoring, continuous linting, or overnight tasks.',
-      'Action: Press [Enter] to enter recurring prompt and start autonomous execution.',
-    ],
-    getValue: () => 'Ready to run',
+    title: 'Autonomous loop',
+    hint: 'run',
+    description: 'Repeat one prompt until you stop it.',
+    details: ['Useful for test-fix-retest cycles. History is compacted between runs.'],
+    keywords: 'repeat automatic continuous',
+    run: startLoop,
   },
-
-  // Category 3: WORKSPACE & REPOSITORY
   {
-    id: '6',
+    id: 'diff',
     category: 'workspace',
-    icon: '🔍',
-    title: 'Git Working Tree Diff',
-    actionHint: '[Enter ↵] Inspect',
-    description: 'Review unstaged and staged code modifications in the repository.',
-    details: [
-      'Inspect uncommitted changes side-by-side with color-highlighted diffs.',
-      'Displays modified files, additions (+), and deletions (-) before instructing the agent.',
-      'Action: Press [Enter] to view colorized git diff in interactive viewer.',
-    ],
-    getValue: (agent) => {
+    title: 'Working tree diff',
+    hint: 'view',
+    description: 'Uncommitted changes in this repository.',
+    details: [],
+    keywords: 'git changes uncommitted',
+    getValue: (a) => {
       try {
-        const out = execSync('git status --porcelain 2>/dev/null', { cwd: agent.getCwd(), encoding: 'utf-8', timeout: 500 }).trim();
-        return out.length > 0 ? `${out.split('\n').length} modified files` : 'Clean working tree';
+        const out = execSync('git status --porcelain', { cwd: a.getCwd(), encoding: 'utf-8', timeout: 500 }).trim();
+        if (!out) return 'clean';
+        return `${out.split('\n').length} changed`;
       } catch {
-        return 'Not a git repo';
+        return 'not a repo';
       }
     },
+    run: showDiff,
   },
   {
-    id: '7',
+    id: 'compact',
     category: 'workspace',
-    icon: '🧹',
-    title: 'Compact Context',
-    actionHint: '[Enter ↵] Compact',
-    description: 'Melt conversation history into a structured summary to free token budget.',
-    details: [
-      'Rolls up previous multi-turn conversation into a structured executive brief.',
-      'Preserves core requirements, decisions, and file edits while shedding old token bloat.',
-      'Action: Press [Enter] to melt and compact current session turns immediately.',
-    ],
-    getValue: (agent) => `${agent.getMessages().length} turns in buffer`,
+    title: 'Compact context',
+    hint: 'run',
+    description: 'Summarise old turns to free up context.',
+    details: ['Keeps decisions and file edits, drops the rest.'],
+    keywords: 'summarise shrink token melt',
+    getValue: (a) => `${a.getMessages().length} messages`,
+    run: compactContext,
   },
   {
-    id: '8',
+    id: 'export',
     category: 'workspace',
-    icon: '💾',
-    title: 'Export Session',
-    actionHint: '[Enter ↵] Export',
-    description: 'Export active conversation history into a formatted Markdown document.',
-    details: [
-      'Generates a comprehensive Markdown transcript (.md) with timestamps and tool calls.',
-      'Saves to the current working directory for documentation, archiving, or sharing.',
-      'Action: Press [Enter] to export session to disk.',
-    ],
-    getValue: () => 'Markdown (.md)',
+    title: 'Export session',
+    hint: 'run',
+    description: 'Save this conversation as Markdown.',
+    details: [],
+    keywords: 'save markdown file transcript',
+    run: exportSession,
   },
   {
-    id: '9',
+    id: 'usage',
     category: 'workspace',
-    icon: '📊',
-    title: 'Session Usage & Metrics',
-    actionHint: '[Enter ↵] View',
-    description: 'View estimated token consumption, turn counts, and relay gateway health.',
-    details: [
-      'Breaks down tokens across User prompts, Assistant responses, and Tool executions.',
-      'Displays active session ID, upstream provider status, and authentication mode.',
-      'Action: Press [Enter] to open the session analytics dashboard.',
-    ],
-    getValue: (agent) => `${agent.getMessages().length} turns`,
+    title: 'Session usage',
+    hint: 'view',
+    description: 'Token and message counts for this session.',
+    details: [],
+    keywords: 'tokens metrics stats cost',
+    getValue: (a) => `${a.getMessages().length} messages`,
+    run: showUsage,
   },
   {
-    id: 'h',
+    id: 'help',
     category: 'workspace',
-    icon: '❓',
-    title: 'Help & Shortcuts',
-    actionHint: '[Enter ↵] Cheatsheet',
-    description: 'Quick reference for keyboard navigation, keybindings, and slash commands.',
-    details: [
-      'Keyboard navigation: Enter send, Shift+Enter newline, Tab complete, Esc dismiss.',
-      'Core slash commands: /menu, /models, /effort, /think, /loop, /diff, /copy, /subagent.',
-      'Action: Press [Enter] to view the complete keyboard & command reference.',
-    ],
-    getValue: () => 'Cheatsheet',
-  },
-  {
-    id: '0',
-    category: 'workspace',
-    icon: '↩️',
-    title: 'Back to Active Chat',
-    actionHint: '[Esc / Enter]',
-    description: 'Exit settings center and return to active conversation prompt.',
-    details: [
-      'Restores the terminal screen cleanly without losing any chat history or scrollback.',
-      'Action: Press [Esc] or [Enter] to return.',
-    ],
-    getValue: () => 'Esc / Enter',
+    title: 'Shortcuts & commands',
+    hint: 'view',
+    description: 'Every keybinding and command.',
+    details: [],
+    keywords: 'help docs keys reference',
+    run: showHelp,
   },
 ];
 
-export async function showMenu(
-  agent: BeurreAgent,
-  legacyRl?: readline.Interface,
-  options: MenuOptions = {}
-): Promise<void> {
-  const isTTY = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+// -------------------------------------------------------------- palette ----
 
-  if (!isTTY) {
-    return showMenuFallback(agent, legacyRl);
+/** Rank items against a query; empty query preserves declaration order. */
+export function filterMenuItems(items: MenuItem[], query: string): MenuItem[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return items;
+  const terms = q.split(/\s+/);
+  return items.filter((item) => {
+    const hay = `${item.title} ${item.description} ${item.keywords ?? ''}`.toLowerCase();
+    return terms.every((t) => hay.includes(t));
+  });
+}
+
+/**
+ * Render the palette. Pure: takes state, returns lines. Every line is fitted to
+ * `width`, so Overlay.erase() can never drift from the painted height.
+ *
+ * Only the highlighted row resolves its live value. Resolving every row would
+ * fork `git` on each keypress — the bug that made the old menu stutter.
+ */
+export function renderPalette(
+  items: MenuItem[],
+  selected: number,
+  query: string,
+  width: number,
+  agent?: BeurreAgent,
+  thinkingMode = 'expanded',
+  maxRows = termHeight(),
+): string[] {
+  const filtered = filterMenuItems(items, query);
+  const activeIndex = Math.min(selected, Math.max(0, filtered.length - 1));
+
+  const head: string[] = [
+    truncate(`${colors.bold}${colors.butterGold}beurre${colors.reset} ${colors.dim}settings`, width),
+    '',
+    truncate(
+      `  ${colors.butterGold}search${colors.reset} ${
+        query ? `${colors.white}${query}${colors.reset}` : `${colors.darkGray}type to filter…${colors.reset}`
+      }`,
+      width,
+    ),
+    '',
+  ];
+
+  const activeItem = filtered[activeIndex];
+  const tail: string[] = [
+    '',
+    ...(activeItem
+      ? [
+          truncate(`  ${colors.butterCream}${activeItem.description}${colors.reset}`, width),
+          ...activeItem.details
+            .slice(0, 2)
+            .map((d) => truncate(`  ${colors.dim}${d}${colors.reset}`, width)),
+        ]
+      : [truncate(`  ${colors.dim}no matches for “${query}”`, width)]),
+    '',
+    truncate(`  ${colors.dim}↑↓ move · enter select · esc close · type to filter${colors.reset}`, width),
+  ];
+
+  // Category headers consume rows the item budget does not account for, so the
+  // window is shrunk until the body genuinely fits. Building a dozen rows is
+  // cheap, so measure rather than predict.
+  const budget = Math.max(1, maxRows - head.length - tail.length);
+
+  const buildBody = (visible: number): string[] => {
+    const w = listWindow(filtered, visible, activeIndex);
+    const out: string[] = [];
+    let lastCat: MenuCategory | null = null;
+    for (const [i, item] of w.items.entries()) {
+      if (item.category !== lastCat) {
+        lastCat = item.category;
+        out.push(truncate(`  ${colors.mutedBox}${CATEGORY_LABELS[item.category].toUpperCase()}${colors.reset}`, width));
+      }
+      const active = i === w.selected;
+      const pointer = active ? `${colors.butterGold}❯${colors.reset}` : ' ';
+      const name = active
+        ? `${colors.bold}${colors.butterGold}${item.title}${colors.reset}`
+        : `${colors.white}${item.title}${colors.reset}`;
+      // Only the highlighted row resolves its live value: resolving every row
+      // forked `git` on each keypress, which is what made the old menu stutter.
+      const value = active && agent && item.getValue
+        ? `${colors.butterCream}${item.getValue(agent, thinkingMode)}${colors.reset}`
+        : '';
+      const right = value
+        ? `${value}  ${colors.darkGray}${item.hint}${colors.reset}`
+        : `${colors.darkGray}${item.hint}${colors.reset}`;
+      out.push(truncate(columns(`  ${pointer} ${name}`, right, width), width));
+    }
+    return out;
+  };
+
+  // Category headers count toward the body and the "… N more" line costs a
+  // row, so shrink the window until the whole frame fits `budget`.
+  let visible = Math.min(filtered.length, budget);
+  let body = buildBody(visible);
+  const rowsUsed = () => body.length + (filtered.length > visible ? 1 : 0);
+  while (rowsUsed() > budget && visible > 1) body = buildBody(--visible);
+  body = body.slice(0, Math.max(1, budget - (filtered.length > visible ? 1 : 0)));
+
+  if (filtered.length > visible) {
+    body.push(truncate(`  ${colors.darkGray}… ${filtered.length - visible} more`, width));
   }
 
-  let selectedIdx = 0;
-  let running = true;
-  let currentThinkingMode = options.thinkingMode ?? 'expanded';
-  let bannerToast = '';
+  return [...head, ...body, ...tail];
+}
 
-  const stdin = process.stdin;
-  const stdout = process.stdout;
-
-  let lastRenderedLinesCount = 0;
-
-  const clearInline = () => {
-    if (lastRenderedLinesCount > 0) {
-      stdout.write(`\x1b[${lastRenderedLinesCount}A\r`);
-      for (let i = 0; i < lastRenderedLinesCount; i++) {
-        stdout.write('\x1b[2K\x1b[1B');
-      }
-      stdout.write(`\x1b[${lastRenderedLinesCount}A\r`);
-      lastRenderedLinesCount = 0;
-    }
+/**
+ * Open the settings palette. Returns when the user closes it or runs an action.
+ * Non-TTY falls back to a plain numbered list so pipes and CI never hang.
+ */
+export async function showMenu(
+  agent: BeurreAgent,
+  _legacyRl?: readline.Interface,
+  options: MenuOptions = {},
+): Promise<void> {
+  let thinkingMode = options.thinkingMode ?? 'expanded';
+  const ctx: MenuContext = {
+    agent,
+    getThinkingMode: () => thinkingMode,
+    setThinkingMode: (m) => {
+      thinkingMode = m;
+      options.onToggleThinking?.(m);
+    },
   };
 
-  const askInCookedMode = (question: string): Promise<string> => {
-    return new Promise((resolve) => {
-      stdout.write('\x1b[?25h'); // show cursor while asking
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      rl.question(question, (ans) => {
-        rl.close();
-        stdout.write('\x1b[?25l'); // hide cursor again
-        resolve(ans.trim());
-      });
-    });
-  };
+  if (!(process.stdin.isTTY && process.stdout.isTTY)) {
+    return showMenuFallback(agent);
+  }
 
-  const renderInlinePalette = () => {
-    clearInline();
-
-    const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
-    const modelName = getModelDisplayName(agent.getModel());
-
-    const lines: string[] = [];
-    lines.push(`  ${colors.butterMelt}╭── 🧈 Beurre Command Palette (OMP Mode) ──────────────────────────────╮${colors.reset}`);
-    lines.push(`  ${colors.butterMelt}│${colors.reset}  ${colors.dim}Model:${colors.reset} ${colors.bold}${colors.butterCream}${modelName}${colors.reset}  ${colors.dim}• Effort:${colors.reset} ${b.gold(agent.getEffort().toUpperCase())}  ${colors.dim}• Thinking:${colors.reset} ${b.cream(currentThinkingMode.toUpperCase())}`);
-    lines.push(`  ${colors.butterMelt}├────────────────────────────────────────────────────────────────────────┤${colors.reset}`);
-
-    if (bannerToast) {
-      lines.push(`  ${bannerToast}`);
-      bannerToast = '';
-    }
-
-    MENU_ITEMS.forEach((item, idx) => {
-      const isSelected = idx === selectedIdx;
-      const pointer = isSelected ? `${colors.butterGold}❯${colors.reset} ` : '  ';
-      const numTag = `[${item.id}]`;
-      const value = item.getValue ? item.getValue(agent, currentThinkingMode) : '';
-
-      const leftLabel = `${numTag} ${item.icon} ${item.title}`;
-      const leftFormatted = isSelected
-        ? `${colors.bold}${colors.butterGold}${leftLabel}${colors.reset}`
-        : `${colors.white}${leftLabel}${colors.reset}`;
-
-      const visibleLeftLen = stripAnsi(leftLabel).length;
-      const padLen = Math.max(2, 28 - visibleLeftLen);
-
-      const rightFormatted = isSelected
-        ? `${colors.bold}${colors.butterCream}${value}${colors.reset}  ${colors.dim}${item.actionHint}${colors.reset}`
-        : `${colors.gray}${value}${colors.reset}`;
-
-      lines.push(`  ${pointer}${leftFormatted}${' '.repeat(padLen)}${rightFormatted}`);
-    });
-
-    const activeItem = MENU_ITEMS[selectedIdx];
-    lines.push(`  ${colors.butterMelt}├────────────────────────────────────────────────────────────────────────┤${colors.reset}`);
-    lines.push(`  ${colors.butterMelt}│${colors.reset}  ${colors.butterCream}${activeItem.description}${colors.reset}`);
-    lines.push(`  ${colors.butterMelt}╰────────────────────────────────────────────────────────────────────────╯${colors.reset}`);
-    lines.push(`  ${colors.dim}[↑/↓] Move   [Space] Cycle   [Enter] Select   [Esc] Close${colors.reset}`);
-
-    stdout.write(lines.join('\n') + '\n');
-    lastRenderedLinesCount = lines.length;
-  };
-
-  // Hide cursor during navigation
-  stdout.write('\x1b[?25l');
+  const overlay = new Overlay();
+  let query = '';
+  let selected = 0;
 
   try {
-    while (running) {
-      renderInlinePalette();
+    for (;;) {
+      const width = termWidth();
+      const filtered = filterMenuItems(MENU_ITEMS, query);
+      selected = Math.min(selected, Math.max(0, filtered.length - 1));
+      overlay.paint(renderPalette(MENU_ITEMS, selected, query, width, agent, thinkingMode));
 
-      // Read single keypress in raw mode
-      const key = await new Promise<string>((resolve) => {
-        stdin.setRawMode(true);
-        stdin.resume();
-        const onData = (chunk: Buffer) => {
-          stdin.removeListener('data', onData);
-          resolve(chunk.toString('utf-8'));
-        };
-        stdin.on('data', onData);
-      });
+      const key = await readKey();
 
-      // Handle Up arrow / 'k'
-      if (key === '\x1b[A' || key === 'k') {
-        selectedIdx = selectedIdx <= 0 ? MENU_ITEMS.length - 1 : selectedIdx - 1;
+      if (key === 'esc' || (isCharKey(key) && (key.char === 'q' || key.char === '\x03'))) break;
+
+      if (key === 'up') {
+        if (filtered.length) selected = (selected - 1 + filtered.length) % filtered.length;
+        continue;
+      }
+      if (key === 'down') {
+        if (filtered.length) selected = (selected + 1) % filtered.length;
+        continue;
+      }
+      if (key === 'pageup') { selected = Math.max(0, selected - 8); continue; }
+      if (key === 'pagedown') { selected = Math.min(filtered.length - 1, selected + 8); continue; }
+
+      if (key === 'backspace') {
+        query = query.slice(0, -1);
+        selected = 0;
         continue;
       }
 
-      // Handle Down arrow / 'j'
-      if (key === '\x1b[B' || key === 'j') {
-        selectedIdx = (selectedIdx + 1) % MENU_ITEMS.length;
-        continue;
+      if (key === 'enter') {
+        const item = filtered[selected];
+        overlay.erase();
+        if (!item) return;
+        if (item.run) await item.run(ctx);
+        return;
       }
 
-      // Handle Esc or 'q'
-      if (key === '\x1b' || key === 'q' || key === 'Q') {
-        break;
-      }
-
-      // Space key: cycle toggleable settings
-      if (key === ' ') {
-        const active = MENU_ITEMS[selectedIdx];
-        if (active.id === '2') {
-          const efforts = ['max', 'xhigh', 'high', 'medium', 'low'];
-          const cur = agent.getEffort().toLowerCase();
-          const nextIdx = (efforts.indexOf(cur) + 1) % efforts.length;
-          const nextEffort = efforts[nextIdx];
-          agent.setEffort(nextEffort);
-          continue;
-        }
-        if (active.id === '3') {
-          if (currentThinkingMode === 'expanded') currentThinkingMode = 'collapsed';
-          else if (currentThinkingMode === 'collapsed') currentThinkingMode = 'hidden';
-          else currentThinkingMode = 'expanded';
-          options.onToggleThinking?.(currentThinkingMode);
-          continue;
-        }
-      }
-
-      // Handle Enter or number selection
-      let chosenItem = MENU_ITEMS[selectedIdx];
-      if (key >= '1' && key <= '9') {
-        const found = MENU_ITEMS.find((m) => m.id === key);
-        if (found) chosenItem = found;
-      } else if (key === '0') {
-        break;
-      } else if (key.toLowerCase() === 'h') {
-        const found = MENU_ITEMS.find((m) => m.id === 'h');
-        if (found) chosenItem = found;
-      } else if (key !== '\r' && key !== '\n') {
-        continue;
-      }
-
-      if (chosenItem.id === '0') {
-        break;
-      }
-
-      // Clear palette before executing chosen action so terminal stays clean
-      clearInline();
-      stdout.write('\x1b[?25h'); // restore cursor for action
-
-      switch (chosenItem.id) {
-        case '1': {
-          await openModelPicker(agent.getModel(), (newModel) => {
-            agent.setModel(newModel);
-          });
-          console.log(`\n${renderToast(`Active model switched to: ${getModelDisplayName(agent.getModel())}`, true)}\n`);
-          return;
-        }
-
-        case '2': {
-          const efforts = ['max', 'xhigh', 'high', 'medium', 'low'];
-          const cur = agent.getEffort().toLowerCase();
-          const nextIdx = (efforts.indexOf(cur) + 1) % efforts.length;
-          const nextEffort = efforts[nextIdx];
-          agent.setEffort(nextEffort);
-          console.log(`\n${renderToast(`Reasoning effort set to: ${nextEffort.toUpperCase()}`, true)}\n`);
-          return;
-        }
-
-        case '3': {
-          if (currentThinkingMode === 'expanded') currentThinkingMode = 'collapsed';
-          else if (currentThinkingMode === 'collapsed') currentThinkingMode = 'hidden';
-          else currentThinkingMode = 'expanded';
-          options.onToggleThinking?.(currentThinkingMode);
-          console.log(`\n${renderToast(`Thinking block display set to: ${currentThinkingMode.toUpperCase()}`, true)}\n`);
-          return;
-        }
-
-        case '4': {
-          console.log(`\n${colors.bold}${colors.butterGold}👥 Native Named Subagents Squad${colors.reset} ${colors.dim}(Designated personas & models)${colors.reset}:\n`);
-          const subs = listSubagents();
-          subs.forEach((s, idx) => {
-            console.log(`  ${b.gold(`[${idx + 1}]`)} ${b.subagentBadge(s.name)} ${colors.dim}Model:${colors.reset} ${b.cream(s.modelId)}`);
-            console.log(`      Role: ${colors.white}${s.role}${colors.reset}`);
-            console.log(`      ${colors.gray}${s.description}${colors.reset}\n`);
-          });
-          return;
-        }
-
-        case '5': {
-          const loopPrompt = await askInCookedMode(`  ${b.gold('Enter recurring prompt for loop (or Enter to cancel):')} `);
-          if (loopPrompt) {
-            const maxStr = await askInCookedMode(`  ${b.gold('Max iterations (press Enter for continuous):')} `);
-            const maxIterations = maxStr ? parseInt(maxStr, 10) : undefined;
-            const runner = new BeurreLoopRunner();
-            await runner.start(agent, loopPrompt, { maxIterations });
-          }
-          return;
-        }
-
-        case '6': {
-          try {
-            const diffOutput = execSync('git diff HEAD 2>/dev/null', {
-              cwd: agent.getCwd(),
-              encoding: 'utf-8',
-              timeout: 5000,
-            }).trim();
-
-            if (!diffOutput) {
-              console.log(`\n${b.green('✔ Clean repository working tree. No uncommitted modifications.')}\n`);
-            } else {
-              console.log(`\n${colors.bold}${colors.butterGold}🧈 Git Working Tree Diff:${colors.reset}\n`);
-              const lines = diffOutput.split('\n');
-              const displayLines = lines.slice(0, 40);
-              const highlighted = displayLines.map((line) => {
-                if (line.startsWith('+++') || line.startsWith('---')) return `  ${colors.dim}${line}${colors.reset}`;
-                if (line.startsWith('+')) return `  ${colors.green}${line}${colors.reset}`;
-                if (line.startsWith('-')) return `  ${colors.red}${line}${colors.reset}`;
-                if (line.startsWith('@@')) return `  ${colors.cyan}${line}${colors.reset}`;
-                return `  ${colors.gray}${line}${colors.reset}`;
-              }).join('\n');
-              console.log(highlighted);
-              if (lines.length > 40) {
-                console.log(`\n  ${colors.dim}... and ${lines.length - 40} more diff lines${colors.reset}`);
-              }
-              console.log();
-            }
-          } catch (err: any) {
-            console.log(`\n${b.red('Error running git diff:')} ${err.message}\n`);
-          }
-          return;
-        }
-
-        case '7': {
-          const msgs = agent.getMessages();
-          if (msgs.length <= 2) {
-            console.log(`\n${renderToast('Context is already minimal. No compaction needed.', true)}\n`);
-          } else {
-            const before = msgs.length;
-            const compacted = compactMessages(msgs, { iteration: 1, isLoop: false });
-            agent.setMessages(compacted);
-            const after = compacted.length;
-            console.log(`\n${renderToast(`Context compacted: ${before} turns → ${after} turns`, true)}\n`);
-          }
-          return;
-        }
-
-        case '8': {
-          const defaultPath = path.join(agent.getCwd(), `beurre-session-${new Date().toISOString().slice(0, 10)}.md`);
-          const msgs = agent.getMessages();
-          const mdLines = [
-            `# 🧈 Beurre Session Export`,
-            `_Session ID: ${agent.getSessionId()} | Model: ${getModelDisplayName(agent.getModel())} (${agent.getModel()}) | Effort: ${agent.getEffort()} | Exported: ${new Date().toLocaleString()}_`,
-            '',
-          ];
-          for (const m of msgs) {
-            if (m.role === 'system') continue;
-            if (m.role === 'user') {
-              mdLines.push(`## 👤 User\n\n${m.content}\n`);
-            } else if (m.role === 'assistant') {
-              mdLines.push(`## 🧈 Beurre (${getModelDisplayName(agent.getModel())})\n\n${m.content}\n`);
-            } else if (m.role === 'tool') {
-              mdLines.push(`> **Tool Result (${m.name || 'tool'})**:\n\`\`\`\n${m.content?.slice(0, 500) || ''}\n\`\`\`\n`);
-            }
-          }
-          try {
-            fs.writeFileSync(defaultPath, mdLines.join('\n'), 'utf-8');
-            console.log(`\n${renderToast(`Session exported successfully to: ${defaultPath}`, true)}\n`);
-          } catch (err: any) {
-            console.log(`\n${renderToast(`Export failed: ${err.message}`, false)}\n`);
-          }
-          return;
-        }
-
-        case '9': {
-          const msgs = agent.getMessages();
-          let userChars = 0;
-          let assistantChars = 0;
-          let toolChars = 0;
-          for (const m of msgs) {
-            if (m.role === 'user') userChars += m.content?.length || 0;
-            else if (m.role === 'assistant') userChars += m.content?.length || 0;
-            else if (m.role === 'tool') toolChars += m.content?.length || 0;
-          }
-          const totalEstTokens = Math.round((userChars + assistantChars + toolChars) / 4);
-
-          console.log(`\n${colors.butterGold}╭── 📊 Session Usage & Metrics ──────────────────────────────────╮${colors.reset}`);
-          console.log(`  ${b.bold('Session ID:')}       ${colors.dim}${agent.getSessionId()}${colors.reset}`);
-          console.log(`  ${b.bold('Active Model:')}     ${b.gold(getModelDisplayName(agent.getModel()))} ${colors.dim}(${agent.getModel()})${colors.reset}`);
-          console.log(`  ${b.bold('Reasoning Effort:')} ${b.gold(agent.getEffort().toUpperCase())}`);
-          console.log(`  ${b.bold('Thinking Mode:')}    ${b.cream(currentThinkingMode.toUpperCase())}`);
-          console.log(`  ${b.bold('Total Turns:')}      ${b.cream(msgs.length)} messages`);
-          console.log(`  ${b.bold('Estimated Tokens:')} ${b.gold(`~${totalEstTokens.toLocaleString()} tokens`)}`);
-          console.log(`  ${b.bold('Token Breakdown:')}  ${colors.dim}User: ~${Math.round(userChars/4)} tok • Assistant: ~${Math.round(assistantChars/4)} tok • Tools: ~${Math.round(toolChars/4)} tok${colors.reset}`);
-          console.log(`  ${b.bold('Relay Status:')}     ${b.green('● LIVE (relay-gw.pages.dev)')}`);
-          console.log(`${colors.butterGold}╰────────────────────────────────────────────────────────────────╯${colors.reset}\n`);
-          return;
-        }
-
-        case 'h': {
-          console.log(`\n${colors.bold}${colors.butterGold}❓ Help & Shortcuts Reference${colors.reset}\n`);
-          console.log(`  ${b.bold('Keyboard Shortcuts:')}`);
-          console.log(`    ${b.gold('Enter')}            Send prompt / execute selection`);
-          console.log(`    ${b.gold('Shift+Enter')}      Insert newline in multi-line prompt editor`);
-          console.log(`    ${b.gold('Shift+Tab')}        Cycle reasoning effort slider (Low → Medium → High → XHigh → Max)`);
-          console.log(`    ${b.gold('Tab')}              Autocomplete command or complete path`);
-          console.log(`    ${b.gold('Ctrl+C')}           Interrupt active turn / abort inference`);
-          console.log(`    ${b.gold('Esc')}              Dismiss autocomplete popup or clear prompt\n`);
-          console.log(`  ${b.bold('Core Slash Commands:')}`);
-          console.log(`    ${b.gold('/new [model]')}     Start fresh session bound to model & Supabase`);
-          console.log(`    ${b.gold('/sessions')}        List cloud sessions from Supabase across devices`);
-          console.log(`    ${b.gold('/resume <id>')}     Resume a session from Supabase cloud store`);
-          console.log(`    ${b.gold('/whoami')}          Show active user, role & daily token quota`);
-          console.log(`    ${b.gold('/quota')}           Inspect 50M daily token usage & progress`);
-          console.log(`    ${b.gold('/login')}           Sign in to Relay / Supabase account`);
-          console.log(`    ${b.gold('/logout')}          Sign out and clear local credentials`);
-          console.log(`    ${b.gold('/models')}          Open visual model navigator`);
-          console.log(`    ${b.gold('/menu')}            Open OMP-style command palette`);
-          console.log(`    ${b.gold('/clear')}           Clear terminal screen buffer (preserves session)`);
-          console.log(`    ${b.gold('/exit')}            Save session state and quit\n`);
-          return;
-        }
+      if (isCharKey(key)) {
+        query += key.char;
+        selected = 0;
       }
     }
   } finally {
-    clearInline();
-    stdout.write('\x1b[?25h');
+    overlay.erase();
   }
 }
 
-// Non-interactive fallback for pipes / CI / tests
-async function showMenuFallback(agent: BeurreAgent, legacyRl?: readline.Interface): Promise<void> {
-  const ask = (query: string): Promise<string> => {
-    if (legacyRl) {
-      return new Promise((resolve) => legacyRl.question(query, (ans) => resolve(ans.trim())));
-    }
-    const tempRl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    return new Promise((resolve) => {
-      tempRl.question(query, (ans) => {
-        tempRl.close();
-        resolve(ans.trim());
-      });
-    });
-  };
-
-  MENU_ITEMS.forEach((m) => {
-    console.log(`[${m.id}] ${m.icon} ${m.title}`);
-  });
-  const choice = await ask(`${b.gold('Select option [0-9]:')} `);
-  if (choice === '0' || choice.toLowerCase() === 'q') return;
-  console.log(`Selected ${choice}`);
+/** Non-interactive listing for pipes and CI. */
+async function showMenuFallback(agent: BeurreAgent): Promise<void> {
+  for (const item of MENU_ITEMS) {
+    const value = item.getValue?.(agent, 'expanded') ?? '';
+    console.log(`${item.id.padEnd(12)} ${item.title}${value ? `  (${value})` : ''}`);
+  }
 }
+
+export { relay, fit, stringWidth };

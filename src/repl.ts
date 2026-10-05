@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 import { BeurreAgent } from './agent.ts';
-import { relay, getModelDisplayName } from './relay.ts';
+import { relay, getModelDisplayName, type ChatMessage } from './relay.ts';
 import { listSubagents, runNamedSubagent } from './subagents.ts';
 import { compactMessages } from './compact.ts';
 import { BeurreLoopRunner } from './loop.ts';
@@ -11,11 +11,11 @@ import { showMenu } from './menu.ts';
 import { openModelPicker } from './model-picker.ts';
 import { BeurreEditor } from './editor.ts';
 import { renderMarkdownBlock, formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts';
+import { box, termWidth } from './layout.ts';
 import {
   b,
   colors,
   banner,
-  statusBar,
   ButterSpinner,
   BeurreWorkingBar,
   formatClaudeToolCall,
@@ -37,6 +37,34 @@ import {
   logoutFromRelay,
   type AuthUser,
 } from './auth.ts';
+import {
+  buildInitPrompt,
+  computeStats,
+  contentWidth,
+  detectTestCommand,
+  listCheckpoints,
+  listSnippets,
+  loadCheckpoint,
+  outlineFile,
+  renderCheckpoints,
+  renderDoctor,
+  renderEnv,
+  renderGrep,
+  renderTestResult,
+  grepWorkspace as grepWorkspaceSafe,
+  renderOutline,
+  renderSnippets,
+  renderStats,
+  renderToolCatalog,
+  runDoctor,
+  runTestCommand,
+  saveCheckpoint,
+  saveSnippet,
+  removeSnippet,
+  isFirstRun,
+  markOnboarded,
+  renderWelcome,
+} from './features.ts';
 
 export function copyToClipboard(text: string): boolean {
   try {
@@ -75,6 +103,13 @@ export async function startRepl(initialModel?: string): Promise<void> {
   console.clear();
   console.log(banner('1.0.0', agent.getModel(), agent.getCwd(), agent.getEffort()));
 
+  // First launch only: show the welcome panel once so a newcomer knows how to
+  // start, then never again — repeat chrome is what makes a tool feel broken.
+  if (isFirstRun()) {
+    console.log(renderWelcome(contentWidth()).join('\n') + '\n');
+    markOnboarded();
+  }
+
   let totalTokensEstimate = 0;
   let activeAbortController: AbortController | null = null;
   let thinkingMode: 'expanded' | 'collapsed' | 'hidden' = 'expanded';
@@ -104,7 +139,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
       if (activeWorkingBar) {
         activeWorkingBar.stop();
       }
-      console.log(`\n${colors.butterMelt}🧈 Turn interrupted by user.${colors.reset}\n`);
+      console.log(`\n${colors.butterMelt}Turn interrupted by user.${colors.reset}\n`);
     }
   };
   process.on('SIGINT', onSigInt);
@@ -135,10 +170,13 @@ export async function startRepl(initialModel?: string): Promise<void> {
       break;
     }
 
-    const trimmed = rawInput.trim();
+    let trimmed = rawInput.trim();
     if (!trimmed) {
       continue;
     }
+
+    // A slash command can synthesise a prompt to run (e.g. /init).
+    let runTurn: string | null = null;
 
     // Handle Slash Commands
     if (trimmed.startsWith('/')) {
@@ -177,7 +215,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
             if (sessions.length === 0) {
               console.log(`\n${renderToast('No saved cloud sessions found in Supabase.', true)}\n`);
             } else {
-              console.log(`\n${colors.bold}${colors.butterGold}☁️  SUPABASE CLOUD SESSIONS${colors.reset} (${sessions.length} sessions across devices):\n`);
+              console.log(`\n${colors.bold}${colors.butterGold}SUPABASE CLOUD SESSIONS${colors.reset} (${sessions.length} sessions across devices):\n`);
               for (const s of sessions.slice(0, 15)) {
                 const isActive = s.id === agent.getSessionId();
                 const activeBadge = isActive ? ` ${colors.bold}${colors.green}[ACTIVE]${colors.reset}` : '';
@@ -218,8 +256,11 @@ export async function startRepl(initialModel?: string): Promise<void> {
                 ? [systemMsg, ...restoredHistory.filter((m: any) => m.role !== 'system')]
                 : restoredHistory;
               agent.setMessages(finalMessages as any);
+              // Seed the counter from resumed history so usage stays monotonic.
+              // Only the transcript counts — the system prompt is re-sent every
+              // turn and is not a per-session cost.
               totalTokensEstimate = Math.round(
-                finalMessages.reduce((acc: number, m: any) => acc + (m.content?.length || 0), 0) / 4
+                restoredHistory.reduce((acc: number, m: ChatMessage) => acc + (m.content?.length || 0), 0) / 4,
               );
               console.log(`\n${renderToast(`Resumed cloud session "${sess.title}" (${sess.id}) bound to ${getModelDisplayName(agent.getModel())}`, true)}\n`);
             }
@@ -236,13 +277,17 @@ export async function startRepl(initialModel?: string): Promise<void> {
             const usage = await fetchTokenUsage();
             dailyTokensUsed = usage.dailyTokensUsed;
             spinner.stop();
-            console.log(`\n${colors.butterGold}╭── 👤 Active Account Profile ───────────────────────────────────╮${colors.reset}`);
-            console.log(`  ${b.bold('Account:')}       ${b.cream(user.name)}`);
-            console.log(`  ${b.bold('Role Tier:')}     ${user.role === 'admin' ? b.gold('ADMIN (Unlimited)') : b.cream('STANDARD (50M Daily Limit)')}`);
-            console.log(`  ${b.bold('Storage:')}       ${b.green('Supabase Postgres (relay_chats)')}`);
-            console.log(`  ${b.bold('Daily Tokens:')}  ${usage.isUnlimited ? '∞ Unlimited' : `${usage.dailyTokensUsed.toLocaleString()} / 50,000,000`}`);
-            console.log(`  ${b.bold('Quota Bar:')}     ${formatTokenProgressBar(usage.dailyTokensUsed, usage.dailyLimit)}`);
-            console.log(`${colors.butterGold}╰────────────────────────────────────────────────────────────────╯${colors.reset}\n`);
+            console.log('\n' + box({
+              title: 'Active Account Profile',
+              width: Math.min(termWidth(), 80),
+              lines: [
+                `${b.bold('Account:')}       ${b.cream(user.name)}`,
+                `${b.bold('Role Tier:')}     ${user.role === 'admin' ? b.gold('ADMIN (Unlimited)') : b.cream('STANDARD (50M Daily Limit)')}`,
+                `${b.bold('Storage:')}       ${b.green('Supabase Postgres (relay_chats)')}`,
+                `${b.bold('Daily Tokens:')}  ${usage.isUnlimited ? '∞ Unlimited' : `${usage.dailyTokensUsed.toLocaleString()} / 50,000,000`}`,
+                `${b.bold('Quota Bar:')}     ${formatTokenProgressBar(usage.dailyTokensUsed, usage.dailyLimit)}`,
+              ],
+            }).join('\n') + '\n');
           } catch (err: any) {
             spinner.stop();
             console.log(renderErrorCard('Account Error', err.message));
@@ -257,17 +302,19 @@ export async function startRepl(initialModel?: string): Promise<void> {
             const usage = await fetchTokenUsage();
             dailyTokensUsed = usage.dailyTokensUsed;
             spinner.stop();
-            console.log(`\n${colors.butterGold}╭── 📊 Daily Token Quota (50M Limit) ────────────────────────────╮${colors.reset}`);
-            console.log(`  ${b.bold('Account:')}       ${b.cream(usage.account)} (${usage.role.toUpperCase()})`);
-            console.log(`  ${b.bold('Today Used:')}    ${b.gold(usage.dailyTokensUsed.toLocaleString())} tokens`);
-            console.log(`  ${b.bold('Daily Limit:')}   ${usage.isUnlimited ? b.green('∞ Unlimited (Admin Tier)') : b.cream('50,000,000 tokens')}`);
-            if (!usage.isUnlimited) {
-              console.log(`  ${b.bold('Remaining:')}    ${b.green((usage.remainingTokens || 0).toLocaleString())} tokens`);
-            }
-            console.log(`  ${b.bold('Progress:')}     ${formatTokenProgressBar(usage.dailyTokensUsed, usage.dailyLimit)}`);
-            console.log(`  ${b.bold('Weekly Used:')}   ${usage.weeklyTokensUsed.toLocaleString()} tokens`);
-            console.log(`  ${b.bold('All-Time:')}      ${usage.allTimeTokensUsed.toLocaleString()} tokens`);
-            console.log(`${colors.butterGold}╰────────────────────────────────────────────────────────────────╯${colors.reset}\n`);
+            console.log('\n' + box({
+              title: 'Daily Token Quota (50M Limit)',
+              width: Math.min(termWidth(), 80),
+              lines: [
+                `${b.bold('Account:')}       ${b.cream(usage.account)} (${usage.role.toUpperCase()})`,
+                `${b.bold('Today Used:')}    ${b.gold(usage.dailyTokensUsed.toLocaleString())} tokens`,
+                `${b.bold('Daily Limit:')}   ${usage.isUnlimited ? b.green('∞ Unlimited (Admin Tier)') : b.cream('50,000,000 tokens')}`,
+                ...(!usage.isUnlimited ? [`${b.bold('Remaining:')}    ${b.green((usage.remainingTokens || 0).toLocaleString())} tokens`] : []),
+                `${b.bold('Progress:')}     ${formatTokenProgressBar(usage.dailyTokensUsed, usage.dailyLimit)}`,
+                `${b.bold('Weekly Used:')}   ${usage.weeklyTokensUsed.toLocaleString()} tokens`,
+                `${b.bold('All-Time:')}      ${usage.allTimeTokensUsed.toLocaleString()} tokens`,
+              ],
+            }).join('\n') + '\n');
           } catch (err: any) {
             spinner.stop();
             console.log(renderErrorCard('Quota Error', err.message));
@@ -369,7 +416,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
           try {
             const provs = await relay.fetchProviders();
             spinner.stop();
-            console.log(`\n${b.gold('🧈 UPSTREAM PROVIDERS')} (${provs.length} configured):\n`);
+            console.log(`\n${b.gold('UPSTREAM PROVIDERS')} (${provs.length} configured):\n`);
             for (const p of provs) {
               const status = p.live ? b.green('● LIVE') : b.red('○ DOWN');
               console.log(`  ${status} ${b.bold(p.name.padEnd(20))} ${b.dim(`${p.models || 0} models`)}`);
@@ -383,7 +430,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
         }
 
         case '/subagents': {
-          console.log(`\n${b.gold('🧈 NATIVE NAMED SUBAGENTS')} (Each with designated persona & model ID):\n`);
+          console.log(`\n${b.gold('NATIVE NAMED SUBAGENTS')} (Each with designated persona & model ID):\n`);
           const subs = listSubagents();
           for (const s of subs) {
             console.log(`  ${b.subagentBadge(s.name)} ${b.dim(`[Model: ${s.modelId}]`)}`);
@@ -492,7 +539,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
             if (!diffOutput) {
               console.log(`\n${renderToast('No git changes in working tree (clean repository)', true)}\n`);
             } else {
-              console.log(`\n${colors.bold}${colors.butterGold}🧈 Git Working Tree Diff:${colors.reset}\n`);
+              console.log(`\n${colors.bold}${colors.butterGold}Git Working Tree Diff:${colors.reset}\n`);
               const highlighted = diffOutput.split('\n').map((line) => {
                 if (line.startsWith('+++') || line.startsWith('---')) return `${colors.dim}${line}${colors.reset}`;
                 if (line.startsWith('+')) return `${colors.green}${line}${colors.reset}`;
@@ -513,16 +560,16 @@ export async function startRepl(initialModel?: string): Promise<void> {
           const exportPath = rest ? path.resolve(agent.getCwd(), rest) : defaultPath;
           const msgs = agent.getMessages();
           const mdLines = [
-            `# 🧈 Beurre Session Export`,
+            `# Beurre Session Export`,
             `_Session ID: ${agent.getSessionId()} | Model: ${getModelDisplayName(agent.getModel())} (${agent.getModel()}) | Effort: ${agent.getEffort()} | Exported: ${new Date().toLocaleString()}_`,
             '',
           ];
           for (const m of msgs) {
             if (m.role === 'system') continue;
             if (m.role === 'user') {
-              mdLines.push(`## 👤 User\n\n${m.content}\n`);
+              mdLines.push(`## User\n\n${m.content}\n`);
             } else if (m.role === 'assistant') {
-              mdLines.push(`## 🧈 Beurre (${getModelDisplayName(agent.getModel())})\n\n${m.content}\n`);
+              mdLines.push(`## Beurre (${getModelDisplayName(agent.getModel())})\n\n${m.content}\n`);
             } else if (m.role === 'tool') {
               mdLines.push(`> **Tool Result (${m.name || 'tool'})**:\n\`\`\`\n${m.content.slice(0, 500)}\n\`\`\`\n`);
             }
@@ -548,14 +595,18 @@ export async function startRepl(initialModel?: string): Promise<void> {
           }
           const totalEstTokens = Math.round((userChars + assistantChars + toolChars) / 4);
           const modelName = getModelDisplayName(agent.getModel());
-          console.log(`\n${colors.butterGold}╭── 🧈 Session Usage & Context Breakdown ────────────────────────╮${colors.reset}`);
-          console.log(`  ${b.bold('Active Model:')}     ${b.cream(modelName)} ${b.dim(`(${agent.getModel()})`)}`);
-          console.log(`  ${b.bold('Reasoning Effort:')} ${b.gold(agent.getEffort().toUpperCase())}`);
-          console.log(`  ${b.bold('Session Messages:')} ${b.cream(msgs.length)} turns`);
-          console.log(`  ${b.bold('Estimated Tokens:')} ${b.gold(`~${totalEstTokens.toLocaleString()} tokens`)}`);
-          console.log(`  ${b.bold('Message Ratio:')}    ${b.dim(`User: ~${Math.round(userChars/4)} tok • Assistant: ~${Math.round(assistantChars/4)} tok • Tools: ~${Math.round(toolChars/4)} tok`)}`);
-          console.log(`  ${b.bold('Relay Status:')}     ${b.green('● LIVE (relay-gw.pages.dev)')}`);
-          console.log(`${colors.butterGold}╰────────────────────────────────────────────────────────────────╯${colors.reset}\n`);
+          console.log('\n' + box({
+            title: 'Session Usage & Context Breakdown',
+            width: Math.min(termWidth(), 80),
+            lines: [
+              `${b.bold('Active Model:')}     ${b.cream(modelName)} ${b.dim(`(${agent.getModel()})`)}`,
+              `${b.bold('Reasoning Effort:')} ${b.gold(agent.getEffort().toUpperCase())}`,
+              `${b.bold('Session Messages:')} ${b.cream(msgs.length)} turns`,
+              `${b.bold('Estimated Tokens:')} ${b.gold(`~${totalEstTokens.toLocaleString()} tokens`)}`,
+              `${b.bold('Message Ratio:')}    ${b.dim(`User: ~${Math.round(userChars/4)} tok • Assistant: ~${Math.round(assistantChars/4)} tok • Tools: ~${Math.round(toolChars/4)} tok`)}`,
+              `${b.bold('Relay Status:')}     ${b.green('● LIVE (relay-gw.pages.dev)')}`,
+            ],
+          }).join('\n') + '\n');
           break;
         }
 
@@ -578,14 +629,102 @@ export async function startRepl(initialModel?: string): Promise<void> {
           break;
         }
 
-        case '/history': {
-          const msgs = agent.getMessages();
-          const modelName = getModelDisplayName(agent.getModel());
-          console.log(`\n${b.bold('Session ID:')}     ${b.gold(agent.getSessionId())}`);
-          console.log(`  ${b.bold('Active Model:')}   ${b.gold(modelName)} ${b.dim(`(${agent.getModel()})`)}`);
-          console.log(`  ${b.bold('Effort Level:')}   ${b.gold(agent.getEffort().toUpperCase())}`);
-          console.log(`  ${b.bold('Total Messages:')} ${b.gold(msgs.length)}`);
-          console.log(`  ${b.bold('Est. Tokens:')}    ${b.gold(totalTokensEstimate)}\n`);
+        case '/history':
+        case '/stats': {
+          console.log('\n' + renderStats(computeStats(agent.getMessages()), agent.getModel(), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/doctor': {
+          console.log('\n' + renderDoctor(runDoctor(agent.getCwd()), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/tools': {
+          console.log(`\n${renderToolCatalog(contentWidth())}\n`);
+          break;
+        }
+
+        case '/env': {
+          console.log(`\n${renderEnv(agent.getCwd(), agent.getModel(), agent.getEffort(), contentWidth())}\n`);
+          break;
+        }
+
+        case '/outline': {
+          const target = path.resolve(agent.getCwd(), rest || 'src');
+          try {
+            const stat = fs.statSync(target);
+            const files = stat.isDirectory()
+              ? fs.readdirSync(target).filter((f) => /\.(ts|js|mjs|tsx|jsx|py|go|rs)$/.test(f)).map((f) => path.join(target, f))
+              : [target];
+            const nodes = files.flatMap((f) => outlineFile(f));
+            console.log(`\n${renderOutline(nodes, contentWidth()).join('\n')}\n`);
+          } catch (err: unknown) {
+            console.log(`\n${renderErrorCard('Outline failed', err instanceof Error ? err.message : String(err))}\n`);
+          }
+          break;
+        }
+
+        case '/grep': {
+          if (!rest) {
+            console.log(`\n${colors.dim}Usage: /grep <text>${colors.reset}\n`);
+            break;
+          }
+          console.log(`\n${renderGrep(grepWorkspaceSafe(rest, agent.getCwd()), rest, contentWidth())}\n`);
+          break;
+        }
+
+        case '/init': {
+          // Hand the generated survey to the turn runner below instead of
+          // printing it: `continue` skips turn execution, so a printed prompt
+          // would strand the user with nothing in the editor.
+          runTurn = buildInitPrompt(agent.getCwd());
+          break;
+        }
+
+        case '/test': {
+          const cmd = detectTestCommand(agent.getCwd());
+          if (!cmd) {
+            console.log(`\n${renderErrorCard('No test command detected', `Nothing in ${agent.getCwd()} looks like a test runner.`)}\n`);
+            break;
+          }
+          const spinner = new ButterSpinner();
+          spinner.start(`Running ${cmd}…`);
+          const { code, tail } = await runTestCommand(cmd, { cwd: agent.getCwd() });
+          spinner.stop();
+          console.log('\n' + renderTestResult(code, tail, contentWidth()) + '\n');
+          break;
+        }
+
+        case '/checkpoint': {
+          if (rest) {
+            const cp = loadCheckpoint(rest);
+            if (!cp) {
+              console.log(`\n${renderErrorCard('No such checkpoint', rest)}\n`);
+            } else {
+              agent.setMessages(cp.messages);
+              console.log(`\n${renderToast(`Restored ${cp.id} (${cp.label})`, true)}\n`);
+            }
+            break;
+          }
+          console.log(`\n${renderCheckpoints(listCheckpoints(), contentWidth())}\n`);
+          break;
+        }
+
+        case '/snippet': {
+          const [name, ...body] = rest.split(' ').filter(Boolean);
+          if (!name) {
+            console.log(`\n${renderSnippets(listSnippets(), contentWidth())}\n`);
+          } else if (body[0] === 'add') {
+            saveSnippet(body[1] ?? '', body.slice(2).join(' '));
+            console.log(`\n${renderToast(`Saved snippet ${body[1]}`, true)}\n`);
+          } else if (body[0] === 'rm') {
+            console.log(removeSnippet(name)
+              ? `\n${renderToast(`Removed snippet ${name}`, true)}\n`
+              : `\n${renderErrorCard('No such snippet', name)}\n`);
+          } else {
+            console.log(`\n${renderSnippets(listSnippets().filter((s) => s.name === name), contentWidth())}\n`);
+          }
           break;
         }
 
@@ -603,7 +742,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
         case '/exit':
         case '/quit': {
-          console.log(`\n${b.melt('🧈 Au revoir!')}\n`);
+          console.log(`\n${b.melt('Au revoir!')}\n`);
           process.off('SIGINT', onSigInt);
           process.exit(0);
           break;
@@ -613,7 +752,14 @@ export async function startRepl(initialModel?: string): Promise<void> {
           console.log(`\n${b.red('Unknown command:')} ${cmd}. Type ${b.gold('/menu')} or ${b.gold('/help')} for options.\n`);
         }
       }
-      continue;
+
+      // /init set a prompt to execute; fall through to the turn runner.
+      if (!runTurn) continue;
+    }
+
+    if (runTurn) {
+      trimmed = runTurn;
+      runTurn = null;
     }
 
     // Normal Turn Execution with Streaming, Thinking Blocks, Diffs & Clean Error Recovery
@@ -765,7 +911,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
       if (!activeAbortController.signal.aborted) {
         console.log(renderErrorCard('Relay Gateway / Inference Error', err.message));
       } else {
-        console.log(`\n${colors.butterMelt}🧈 Turn cancelled by user.${colors.reset}\n`);
+        console.log(`\n${colors.butterMelt}Turn cancelled by user.${colors.reset}\n`);
       }
     } finally {
       workingBar.stop();

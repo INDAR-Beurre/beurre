@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  statusBar,
+  colors,
   renderErrorCard,
   renderToast,
   formatClaudeToolCall,
@@ -13,19 +13,6 @@ import {
 import { BeurreAgent } from '../src/agent.ts';
 
 describe('Butter Theme & Status Rendering', () => {
-  it('should render a complete status bar with model and git info', () => {
-    const bar = statusBar({
-      model: 'glm-5-3-flash',
-      cwd: process.cwd(),
-      turns: 5,
-      tokens: 12000,
-    });
-
-    expect(bar).toContain('glm-5-3-flash');
-    expect(bar).toContain('Turns: 5');
-    expect(bar).toContain('tok');
-    expect(bar).toContain('LIVE');
-  });
 
   it('should format error card with red border', () => {
     const card = renderErrorCard('Connection Timeout', 'Failed to reach Relay gateway after 10s.');
@@ -65,7 +52,7 @@ describe('Butter Theme & Status Rendering', () => {
   it('should format pinned working prompt bar with 4 distinct lines and metadata', () => {
     const lines = formatWorkingPromptBar({
       cols: 80,
-      spinnerFrame: '🧈 ⠹',
+      spinnerFrame: '⠹',
       statusText: 'Whipping up solution...',
       model: 'glm-5-3-flash',
       effort: 'high',
@@ -77,7 +64,7 @@ describe('Butter Theme & Status Rendering', () => {
     // Line 0: top border
     expect(lines[0]).toContain('─');
     // Line 1: spinner + active status
-    expect(lines[1]).toContain('🧈 ⠹');
+    expect(lines[1]).toContain('⠹');
     expect(lines[1]).toContain('Whipping up solution...');
     // Line 2: middle border
     expect(lines[2]).toContain('─');
@@ -89,17 +76,12 @@ describe('Butter Theme & Status Rendering', () => {
     expect(lines[3]).toContain('12k / 50M');
   });
 
-  it('should strip leading butter emoji in working prompt bar to prevent double butter', () => {
-    const lines = formatWorkingPromptBar({
-      cols: 80,
-      spinnerFrame: '🧈 ⠹',
-      statusText: '🧈 Whipping up solution...',
-    });
-
-    // Should only have single butter emoji from the spinner frame
-    const butterMatches = lines[1].match(/🧈/g);
-    expect(butterMatches?.length).toBe(1);
-    expect(lines[1]).toContain('Whipping up solution...');
+  it('should render exactly one braille spinner glyph per status line', () => {
+    const lines = formatWorkingPromptBar({ cols: 80, spinnerFrame: '⠹', statusText: 'Whipping up solution...' });
+    expect(lines[1].replace(/\x1b\[[0-9;]*m/g, '')).toBe('⠹ Whipping up solution...');
+    expect(lines[1]).toContain(`${colors.butterCream}Whipping up solution...${colors.reset}`);
+    // The spinner frame must not be echoed twice by the bar's own prefix.
+    expect(lines[1].replace(/\x1b\[[0-9;]*m/g, '').split('⠹')).toHaveLength(2);
   });
 
   it('should truncate overly long status text cleanly without overflowing terminal width', () => {
@@ -125,9 +107,9 @@ describe('Butter Theme & Status Rendering', () => {
     bar.update('Starting engine...');
     expect(bar.getStatusText()).toBe('Starting engine...');
 
-    // Strips leading butter
-    bar.update('🧈 Whipping up solution...');
-    expect(bar.getStatusText()).toBe('Whipping up solution...');
+    // A later update must fully replace the previous status, not append to it.
+    bar.update('Compacting context...');
+    expect(bar.getStatusText()).toBe('Compacting context...');
 
     // Thinking mode
     bar.setThinking(120, 1.5);
@@ -159,7 +141,7 @@ describe('Butter Theme & Status Rendering', () => {
     for (const cols of [70, 60, 50, 40]) {
       const lines = formatWorkingPromptBar({
         cols,
-        spinnerFrame: '🧈 ⠹',
+        spinnerFrame: '⠹',
         statusText: 'Executing bash: git commit -m "update promptbar"...',
         model: 'glm-5-3-flash',
         effort: 'high',
@@ -189,7 +171,7 @@ describe('Butter Theme & Status Rendering', () => {
   it('should format interactive steering prompt bar with 5 lines, status above chat bar, and placeholder', () => {
     const lines = formatSteeringPromptBar({
       cols: 88,
-      spinnerFrame: '🧈 ⠸',
+      spinnerFrame: '⠸',
       statusText: 'Whipping up solution...',
       model: 'glm-5-3-flash',
       effort: 'high',
@@ -199,7 +181,7 @@ describe('Butter Theme & Status Rendering', () => {
 
     expect(lines.length).toBe(5);
     // Line 0: status line ABOVE chat bar
-    expect(lines[0]).toContain('🧈 ⠸');
+    expect(lines[0]).toContain('⠸');
     expect(lines[0]).toContain('Whipping up solution...');
     // Line 1: top divider of chat bar
     expect(lines[1]).toContain('─');
@@ -238,7 +220,7 @@ describe('Butter Theme & Status Rendering', () => {
     for (const cols of [20, 35, 45, 60, 75, 80, 100]) {
       const lines = formatSteeringPromptBar({
         cols,
-        spinnerFrame: '🧈 ⠸',
+        spinnerFrame: '⠸',
         statusText: 'Executing write: src/relay.ts (4.2s)...',
         inputBuffer: 'please steer away from editing config files and keep current models',
         model: 'moonshotai/kimi-k3:max',

@@ -1,42 +1,66 @@
-import { describe, expect, it } from 'bun:test';
-import { filterModelList } from '../src/model-picker.ts';
+import { describe, it, expect } from 'bun:test';
+import { filterModelList, renderModelList } from '../src/model-picker.ts';
+import { stripAnsi, stringWidth } from '../src/layout.ts';
 import type { RelayModel } from '../src/relay.ts';
 
-describe('Model Navigator & Filter Engine', () => {
-  const sampleModels: RelayModel[] = [
-    { id: 'glm-5-3-flash', name: 'GLM 5.3 Flash', owned_by: 'zhipu', reasoning: true, context_length: 128000 },
-    { id: 'gpt-4o', name: 'GPT-4o Omnimodal', owned_by: 'openai', reasoning: false, context_length: 128000 },
-    { id: 'o3-mini', name: 'OpenAI o3-mini', owned_by: 'openai', reasoning: true, context_length: 200000 },
-    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', owned_by: 'google', reasoning: true, context_length: 1000000 },
-    { id: 'kimi-k3:max', name: 'Moonshot Kimi K3 Max', owned_by: 'moonshot', reasoning: true, context_length: 200000 },
-  ];
+const model = (id: string, over: Partial<RelayModel> = {}): RelayModel =>
+  ({ id, context_length: 128000, owned_by: 'acme', ...over }) as RelayModel;
 
-  it('should return all models when filter query is empty', () => {
-    const res = filterModelList(sampleModels, '');
-    expect(res.length).toBe(5);
+const CATALOG: RelayModel[] = [
+  model('glm-5-3-flash', { reasoning: true }),
+  model('kimi-k3', { reasoning_efforts: ['low', 'high'], context_length: 1_000_000 }),
+  model('qwen3-coder', { owned_by: 'alibaba' }),
+];
+
+describe('filterModelList', () => {
+  it('returns everything for an empty query', () => {
+    expect(filterModelList(CATALOG, '')).toHaveLength(3);
   });
 
-  it('should filter models by ID case-insensitively', () => {
-    const res = filterModelList(sampleModels, 'glm');
-    expect(res.length).toBe(1);
-    expect(res[0].id).toBe('glm-5-3-flash');
+  it('matches case-insensitively', () => {
+    expect(filterModelList(CATALOG, 'GLM').map((m) => m.id)).toEqual(['glm-5-3-flash']);
   });
 
-  it('should filter models by provider name (owned_by)', () => {
-    const res = filterModelList(sampleModels, 'openai');
-    expect(res.length).toBe(2);
-    expect(res.some((m) => m.id === 'gpt-4o')).toBe(true);
-    expect(res.some((m) => m.id === 'o3-mini')).toBe(true);
+  it('returns nothing when nothing matches', () => {
+    expect(filterModelList(CATALOG, 'zzzz')).toHaveLength(0);
+  });
+});
+
+describe('renderModelList', () => {
+  // The picker used to write straight to stdout with raw `.length` on
+  // ANSI-bearing strings, so it went ragged below 80 columns. These loops are
+  // the regression guard for that whole class of bug.
+  for (const width of [24, 40, 56, 80, 120]) {
+    it(`never exceeds ${width} columns`, () => {
+      const lines = renderModelList(CATALOG, 0, '', width, 'glm-5-3-flash');
+      for (const line of lines) {
+        expect(stringWidth(line)).toBeLessThanOrEqual(width);
+      }
+    });
+  }
+
+  it('marks exactly one selected row', () => {
+    const lines = renderModelList(CATALOG, 1, '', 80, 'glm-5-3-flash');
+    expect(lines.filter((l) => stripAnsi(l).includes('❯'))).toHaveLength(1);
   });
 
-  it('should filter models by display name', () => {
-    const res = filterModelList(sampleModels, 'Moonshot');
-    expect(res.length).toBe(1);
-    expect(res[0].id).toBe('kimi-k3:max');
+  it('tags the current model as active', () => {
+    const lines = renderModelList(CATALOG, 0, '', 80, 'qwen3-coder');
+    expect(stripAnsi(lines.join('\n'))).toContain('active');
   });
 
-  it('should return empty list when no matches are found', () => {
-    const res = filterModelList(sampleModels, 'non-existent-xyz');
-    expect(res.length).toBe(0);
+  it('shows an empty state instead of a blank body', () => {
+    const lines = renderModelList(CATALOG, 0, 'zzz', 80, 'glm-5-3-flash');
+    expect(stripAnsi(lines.join('\n'))).toContain('no model matches');
+  });
+
+  it('reports the filtered count', () => {
+    const lines = renderModelList(CATALOG, 0, 'kimi', 80, 'glm-5-3-flash');
+    expect(stripAnsi(lines.join('\n'))).toContain('1 of 3 models');
+  });
+
+  it('escapes colour when colour is disabled', () => {
+    const lines = renderModelList(CATALOG, 0, '', 80, 'glm-5-3-flash');
+    expect(lines.join('\n')).not.toContain('\x1b[');
   });
 });

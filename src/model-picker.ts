@@ -1,6 +1,7 @@
 import readline from 'node:readline';
 import { relay, type RelayModel, type RelayProvider, getModelDisplayName } from './relay.ts';
 import { b, colors, ButterSpinner, renderToast } from './theme.ts';
+import { padTo, stringWidth, truncate } from './layout.ts';
 
 export function filterModelList(models: RelayModel[], query: string): RelayModel[] {
   if (!query) return models;
@@ -16,10 +17,106 @@ export function filterModelList(models: RelayModel[], query: string): RelayModel
   });
 }
 
+/**
+ * Pure renderer for the model picker: state in, lines out. Kept at module level
+ * so the width and viewport invariants are testable without a pty — the old
+ * inline version wrote straight to stdout using raw `.length` on ANSI-bearing
+ * strings, which is why it went ragged below 80 columns.
+ */
+export function renderModelList(
+  models: RelayModel[],
+  selected: number,
+  query: string,
+  width: number,
+  currentModelId: string,
+  opts: { scrollOffset?: number; pageSize?: number; liveProviders?: number; totalProviders?: number } = {},
+): string[] {
+  const cols = Math.max(24, Math.min(width, 120));
+  const scrollOffset = Math.max(0, Math.min(opts.scrollOffset ?? 0, models.length));
+  const pageSize = opts.pageSize ?? Math.max(3, Math.min(20, Math.floor(cols / 2)));
+  const filtered = filterModelList(models, query);
+  const selectedIdx = filtered.length === 0 ? 0 : Math.max(0, Math.min(selected, filtered.length - 1));
+
+  const lines: string[] = [
+    truncate(`${colors.bold}${colors.butterGold}beurre${colors.reset} ${colors.dim}select a model`, cols),
+    truncate(
+      `  ${colors.dim}current${colors.reset} ${colors.butterCream}${getModelDisplayName(currentModelId)}${colors.reset}` +
+        `${colors.dim}  ·  ${opts.liveProviders ?? 0} live of ${opts.totalProviders ?? 0} providers${colors.reset}`,
+      cols,
+    ),
+    '',
+    truncate(
+      `  ${colors.butterGold}search${colors.reset} ${
+        query ? `${colors.white}${truncate(query, cols - 10)}${colors.reset}` : `${colors.darkGray}type to filter…${colors.reset}`
+      }`,
+      cols,
+    ),
+    '',
+  ];
+
+  if (filtered.length === 0) {
+    lines.push(truncate(`  ${colors.dim}no model matches “${query}”`, cols));
+  } else {
+    const start = Math.min(scrollOffset, Math.max(0, filtered.length - 1));
+    const visible = filtered.slice(start, start + pageSize);
+
+    // Reserve a fixed name column so the tags form a clean left edge.
+    // `columns()` right-aligns its second half, which ragged every row.
+    const nameCol = Math.min(
+      Math.max(
+        8,
+        ...visible.map((m) => {
+          const d = getModelDisplayName(m.id, models);
+          return stringWidth(d) + (d === m.id ? 0 : stringWidth(m.id) + 1);
+        }),
+      ),
+      Math.floor(cols * 0.55),
+    );
+
+    visible.forEach((m, i) => {
+      const isSelected = start + i === selectedIdx;
+      const pointer = isSelected ? `${colors.butterGold}❯${colors.reset}` : ' ';
+      const displayName = getModelDisplayName(m.id, models);
+
+      // Highlight the matched run so the user can see *why* a row matched;
+      // the old plain substring filter never explained its results.
+      const at = query ? displayName.toLowerCase().indexOf(query.toLowerCase()) : -1;
+      const name = displayName;
+      const painted = isSelected
+        ? `${colors.bold}${colors.butterGold}${name}${colors.reset}`
+        : at < 0
+          ? `${colors.white}${name}${colors.reset}`
+          : `${colors.white}${name.slice(0, at)}${colors.reset}${colors.bold}${colors.butterGold}${name.slice(at, at + query.length)}${colors.reset}${colors.white}${name.slice(at + query.length)}${colors.reset}`;
+      const id = !isSelected && displayName !== m.id ? ` ${colors.dim}${m.id}${colors.reset}` : '';
+
+      const ctxTag = m.context_length ? `${colors.cyan}${Math.round(m.context_length / 1000)}k${colors.reset}` : '';
+      const reasonTag = m.reasoning_efforts?.length
+        ? `${colors.butterPale}${m.reasoning_efforts.slice(0, 2).join(',')}${colors.reset}`
+        : m.reasoning ? `${colors.butterPale}reasoning${colors.reset}` : '';
+      const viaTag = m.owned_by ? `${colors.dim}${truncate(m.owned_by, 18)}${colors.reset}` : '';
+      const activeTag = m.id === currentModelId ? `${colors.green}active${colors.reset}` : '';
+      const tags = [ctxTag, reasonTag, viaTag, activeTag].filter(Boolean).join(` ${colors.dim}·${colors.reset} `);
+
+      const row = `  ${pointer} ${padTo(painted + id, nameCol + 1)}  ${tags}`;
+      lines.push(truncate(row, cols));
+    });
+    if (start + pageSize < filtered.length) {
+      lines.push(truncate(`  ${colors.dim}↓ ${filtered.length - start - pageSize} more${colors.reset}`, cols));
+    }
+  }
+
+  lines.push('', truncate(`  ${colors.dim}${filtered.length} of ${models.length} models · ↑↓ move · enter select · esc close${colors.reset}`, cols));
+  return lines;
+}
+
+/**
+ * Interactive model picker. Renders through `renderModelList` (pure, testable)
+ * and drives navigation itself so it stays usable on a non-TTY stdin.
+ */
 export async function openModelPicker(
   currentModelId: string,
   onSelect: (modelId: string) => void,
-  legacyRl?: readline.Interface
+  legacyRl?: readline.Interface,
 ): Promise<string> {
   const isTTY = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 
@@ -29,19 +126,18 @@ export async function openModelPicker(
   let providers: RelayProvider[] = [];
 
   try {
-    [models, providers] = await Promise.all([
-      relay.fetchLiveModels(),
-      relay.fetchProviders(),
-    ]);
-    spinner.stop();
+    const [m, p] = await Promise.all([relay.listModels(), relay.listProviders()]);
+    models = m ?? [];
+    providers = p ?? [];
   } catch (err: any) {
     spinner.stop();
-    console.error(`${b.red('Error loading models:')} ${err.message}`);
+    renderToast(`Could not reach the Relay Gateway: ${err?.message ?? err}`, false);
     return currentModelId;
   }
+  spinner.stop();
 
   if (models.length === 0) {
-    console.log(`${b.red('No models available from Relay Gateway.')}`);
+    renderToast('No models available from the Relay Gateway.', false);
     return currentModelId;
   }
 
@@ -53,236 +149,123 @@ export async function openModelPicker(
   let filterQuery = '';
   let selectedIdx = 0;
   let scrollOffset = 0;
-  const pageSize = 12;
+  // Chrome costs 7 rows (title, current, blank, search, blank, blank, status),
+  // so a fixed page size overflowed short terminals and wasted tall ones.
+  const pageSize = () => Math.max(3, Math.min(20, (process.stdout.rows || 24) - 11));
 
   const stdin = process.stdin;
   const stdout = process.stdout;
 
-  // Enter alternate screen buffer & hide cursor
   stdout.write('\x1b[?1049h\x1b[?25l');
 
   const cleanupAndExit = () => {
     stdout.write('\x1b[?25h\x1b[?1049l');
   };
 
-  const render = () => {
-    stdout.write('\x1b[H\x1b[2J');
-    const cols = Math.min(stdout.columns || 80, 80);
-    const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
-
-    const title = ` 🧈 BEURRE MODEL NAVIGATOR `;
-    const borderLen = Math.max(0, cols - title.length - 3);
-
-    console.log(`${colors.mutedBox}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.mutedBox}${'─'.repeat(borderLen)}╮${colors.reset}`);
-    const infoText = `  ${b.bold('Active:')} ${b.badge(getModelDisplayName(currentModelId))}  ${colors.dim}•${colors.reset}  ${b.bold('Upstreams:')} ${b.green(`● ${liveProvidersCount} live`)} / ${providers.length} total`;
-    const infoLen = stripAnsi(infoText).length;
-    const padHeader = Math.max(0, cols - infoLen - 2);
-    console.log(`${colors.mutedBox}│${colors.reset}${infoText}${' '.repeat(padHeader)}${colors.mutedBox}│${colors.reset}`);
-    console.log(`${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}\n`);
-
-    const filtered = filterModelList(models, filterQuery);
-
-    // Clamp selectedIdx and scrollOffset
-    if (filtered.length === 0) {
-      selectedIdx = 0;
-      scrollOffset = 0;
-    } else {
-      if (selectedIdx >= filtered.length) {
-        selectedIdx = filtered.length - 1;
-      }
-      if (selectedIdx < 0) {
-        selectedIdx = 0;
-      }
-      if (selectedIdx < scrollOffset) {
-        scrollOffset = selectedIdx;
-      } else if (selectedIdx >= scrollOffset + pageSize) {
-        scrollOffset = selectedIdx - pageSize + 1;
-      }
-    }
-
-    const queryDisplay = filterQuery ? b.gold(`"${filterQuery}"`) : b.dim('(all models - type to filter)');
-    console.log(`  ${colors.dim}Search / Filter:${colors.reset} ${queryDisplay}`);
-    console.log(`  ${colors.dim}Showing ${filtered.length} of ${models.length} models (↑/↓ to navigate, Enter to select, Esc to cancel)${colors.reset}`);
-    console.log(`${colors.dim}─────────────────────────────────────────────────────────────────────────────${colors.reset}\n`);
-
-    const visibleList = filtered.slice(scrollOffset, scrollOffset + pageSize);
-
-    if (filtered.length === 0) {
-      console.log(`  ${b.red('No models matched your filter.')} Press Backspace or Esc to reset search.\n`);
-    } else {
-      visibleList.forEach((m, idx) => {
-        const actualIdx = scrollOffset + idx;
-        const isSelected = actualIdx === selectedIdx;
-        const isCurrent = m.id === currentModelId;
-
-        const pointer = isSelected ? `${colors.butterGold}🧈 ❯${colors.reset} ` : '     ';
-        const activeBadge = isCurrent ? ` ${colors.green}${colors.bold}[ACTIVE]${colors.reset}` : '';
-
-        const displayName = getModelDisplayName(m.id, models);
-        const hasCustomName = displayName !== m.id;
-        const fullLabel = hasCustomName ? `${displayName} (${m.id})` : m.id;
-
-        let formattedLabel = '';
-        if (filterQuery && fullLabel.toLowerCase().includes(filterQuery.toLowerCase())) {
-          const matchIdx = fullLabel.toLowerCase().indexOf(filterQuery.toLowerCase());
-          const before = fullLabel.slice(0, matchIdx);
-          const match = fullLabel.slice(matchIdx, matchIdx + filterQuery.length);
-          const after = fullLabel.slice(matchIdx + filterQuery.length);
-          formattedLabel = `${before}${colors.butterGold}${colors.underline}${match}${colors.reset}${after}`;
-        } else {
-          formattedLabel = hasCustomName
-            ? `${colors.bold}${colors.butterCream}${displayName}${colors.reset} ${colors.dim}(${m.id})${colors.reset}`
-            : `${colors.bold}${m.id}${colors.reset}`;
-        }
-
-        const modelLabel = isSelected
-          ? `${colors.bold}${colors.butterGold}${formattedLabel}${colors.reset}`
-          : formattedLabel;
-
-        const modelPad = Math.max(1, 38 - stripAnsi(modelLabel).length);
-
-        const ctxTag = m.context_length
-          ? `${colors.cyan}${Math.round(m.context_length / 1000)}k ctx${colors.reset}`
-          : '';
-        const reasonTag = m.reasoning_efforts && m.reasoning_efforts.length > 0
-          ? `${colors.butterPale}🧠 ${m.reasoning_efforts.slice(0, 3).join(',')}${colors.reset}`
-          : (m.reasoning ? `${colors.butterPale}🧠 reasoning${colors.reset}` : '');
-        const providerTag = m.owned_by ? `${colors.dim}via ${m.owned_by}${colors.reset}` : '';
-
-        const tags = [ctxTag, reasonTag, providerTag].filter(Boolean).join(' • ');
-
-        console.log(`${pointer}${modelLabel}${' '.repeat(modelPad)} ${tags}${activeBadge}`);
-      });
-
-      if (filtered.length > scrollOffset + pageSize) {
-        const remaining = filtered.length - (scrollOffset + pageSize);
-        console.log(`\n  ${colors.dim}↓ ... and ${remaining} more models. Scroll down or type to refine.${colors.reset}`);
-      } else if (scrollOffset > 0) {
-        console.log(`\n  ${colors.dim}↑ ... scrolled down (${scrollOffset} above)${colors.reset}`);
-      }
-    }
-
-    console.log(`\n${colors.dim}─────────────────────────────────────────────────────────────────────────────${colors.reset}`);
-    console.log(`  ${b.bold('Shortcuts:')} ${b.gold('Enter')} Select  •  ${b.gold('PgUp/PgDn')} Jump page  •  ${b.gold('Esc')} Cancel/Clear  •  ${b.gold('Backspace')} Delete`);
-    console.log(`${colors.dim}─────────────────────────────────────────────────────────────────────────────${colors.reset}`);
+  const paint = () => {
+    const width = Math.max(24, Math.min(stdout.columns || 80, 120));
+    const lines = renderModelList(models, selectedIdx, filterQuery, width, currentModelId, {
+      scrollOffset,
+      pageSize: pageSize(),
+      liveProviders: liveProvidersCount,
+      totalProviders: providers.length,
+    });
+    stdout.write(`\x1b[H\x1b[2J${lines.join('\n')}\n`);
   };
 
   return new Promise<string>((resolve) => {
     stdin.setRawMode(true);
     stdin.resume();
+    paint();
 
-    render();
+    const finish = (chosen: string, commit: boolean) => {
+      stdin.removeListener('data', onData);
+      stdin.setRawMode(false);
+      cleanupAndExit();
+      if (commit) onSelect(chosen);
+      resolve(chosen);
+    };
 
     const onData = (chunk: Buffer) => {
       const str = chunk.toString('utf-8');
+      const filtered = filterModelList(models, filterQuery);
+      const repaint = () => paint();
 
-      // Esc: If filter query exists, clear search first. If already empty, cancel and exit.
+      // Esc clears the query first, then closes — matching every other picker.
       if (str === '\x1b') {
         if (filterQuery.length > 0) {
           filterQuery = '';
           selectedIdx = 0;
           scrollOffset = 0;
-          render();
+          repaint();
           return;
         }
-        stdin.removeListener('data', onData);
-        stdin.setRawMode(false);
-        cleanupAndExit();
-        resolve(currentModelId);
+        finish(currentModelId, false);
         return;
       }
 
-      // Ctrl+C
-      if (str === '\x03') {
-        stdin.removeListener('data', onData);
-        stdin.setRawMode(false);
-        cleanupAndExit();
-        resolve(currentModelId);
-        return;
-      }
+      if (str === '\x03') return finish(currentModelId, false);
 
-      // Enter
       if (str === '\r' || str === '\n') {
-        const filtered = filterModelList(models, filterQuery);
-        if (filtered.length > 0 && selectedIdx >= 0 && selectedIdx < filtered.length) {
-          const chosen = filtered[selectedIdx].id;
-          stdin.removeListener('data', onData);
-          stdin.setRawMode(false);
-          cleanupAndExit();
-          onSelect(chosen);
-          resolve(chosen);
-          return;
-        }
+        if (selectedIdx >= 0 && selectedIdx < filtered.length) finish(filtered[selectedIdx].id, true);
+        return;
       }
 
-      // Up arrow: \x1b[A
       if (str === '\x1b[A') {
-        if (selectedIdx > 0) {
-          selectedIdx--;
-        }
-        render();
+        if (selectedIdx > 0) selectedIdx--;
+        repaint();
         return;
       }
 
-      // Down arrow: \x1b[B
       if (str === '\x1b[B') {
-        const filtered = filterModelList(models, filterQuery);
-        if (selectedIdx < filtered.length - 1) {
-          selectedIdx++;
-        }
-        render();
+        if (selectedIdx < filtered.length - 1) selectedIdx++;
+        repaint();
         return;
       }
 
-      // PageUp: \x1b[5~
       if (str === '\x1b[5~') {
-        selectedIdx = Math.max(0, selectedIdx - pageSize);
-        render();
+        selectedIdx = Math.max(0, selectedIdx - pageSize());
+        repaint();
         return;
       }
 
-      // PageDown: \x1b[6~
       if (str === '\x1b[6~') {
-        const filtered = filterModelList(models, filterQuery);
-        selectedIdx = Math.min(Math.max(0, filtered.length - 1), selectedIdx + pageSize);
-        render();
+        selectedIdx = Math.min(Math.max(0, filtered.length - 1), selectedIdx + pageSize());
+        repaint();
         return;
       }
 
-      // Home: \x1b[H or \x1b[1~ or Ctrl+A (\x01)
       if (str === '\x1b[H' || str === '\x1b[1~' || str === '\x01') {
         selectedIdx = 0;
         scrollOffset = 0;
-        render();
+        repaint();
         return;
       }
 
-      // End: \x1b[F or \x1b[4~ or Ctrl+E (\x05)
       if (str === '\x1b[F' || str === '\x1b[4~' || str === '\x05') {
-        const filtered = filterModelList(models, filterQuery);
         selectedIdx = Math.max(0, filtered.length - 1);
-        render();
+        repaint();
         return;
       }
 
-      // Backspace: \x7f or \x08
-      if (str === '\x7f' || str === '\x08') {
+      if (str === '\x7f' || str === '\b') {
         if (filterQuery.length > 0) {
           filterQuery = filterQuery.slice(0, -1);
           selectedIdx = 0;
           scrollOffset = 0;
-          render();
+          repaint();
         }
         return;
       }
 
-      // Printable character typing (search filter)
-      // Exclude escape sequences, tabs, carriage returns, etc.
-      if (!str.startsWith('\x1b') && str.length >= 1 && !['\r', '\n', '\t', '\x03', '\x04'].includes(str)) {
+      // Printable input extends the filter. Pasted text arrives as one chunk,
+      // so append it whole rather than dropping all but the first character.
+      const control = ['\r', '\n', '\t', '\x03', '\x04', '\x7f', '\b'];
+      if (!str.startsWith('\x1b') && str.length > 0 && ![...str].some((ch) => control.includes(ch))) {
         filterQuery += str;
         selectedIdx = 0;
         scrollOffset = 0;
-        render();
+        repaint();
       }
     };
 
@@ -290,41 +273,33 @@ export async function openModelPicker(
   });
 }
 
+/**
+ * Non-TTY path: print the catalogue and take an index on stdin so piped runs
+ * and CI never block on a full-screen picker.
+ */
 async function openModelPickerFallback(
   currentModelId: string,
   models: RelayModel[],
   onSelect: (modelId: string) => void,
-  legacyRl?: readline.Interface
+  legacyRl?: readline.Interface,
 ): Promise<string> {
-  const ask = (query: string): Promise<string> => {
-    if (legacyRl) {
-      return new Promise((resolve) => legacyRl.question(query, (ans) => resolve(ans.trim())));
-    }
-    const tempRl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    return new Promise((resolve) => {
-      tempRl.question(query, (ans) => {
-        tempRl.close();
-        resolve(ans.trim());
-      });
-    });
-  };
-
-  models.slice(0, 15).forEach((m, idx) => {
-    const displayName = getModelDisplayName(m.id, models);
-    const label = displayName !== m.id ? `${displayName} (${m.id})` : m.id;
-    console.log(`[${idx + 1}] ${label}`);
+  console.log(`\nAvailable models (current: ${getModelDisplayName(currentModelId)}):\n`);
+  models.forEach((m, i) => {
+    const mark = m.id === currentModelId ? '*' : ' ';
+    console.log(`${mark} ${String(i + 1).padStart(3)}. ${m.id}`);
   });
-  const input = await ask('Select model number or ID: ');
-  const num = parseInt(input, 10);
-  if (!isNaN(num) && num >= 1 && num <= 10) {
-    const chosen = models[num - 1].id;
-    onSelect(chosen);
-    return chosen;
+
+  const rl = legacyRl ?? readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise<string>((resolve) => rl.question('Model number (blank to cancel): ', resolve));
+  rl.close();
+
+  const idx = Number.parseInt(answer.trim(), 10);
+  if (!Number.isFinite(idx) || idx < 1 || idx > models.length) {
+    renderToast('Model unchanged.', false);
+    return currentModelId;
   }
-  const match = models.find((m) => m.id.toLowerCase() === input.toLowerCase());
-  if (match) {
-    onSelect(match.id);
-    return match.id;
-  }
-  return currentModelId;
+  const chosen = models[idx - 1].id;
+  onSelect(chosen);
+  renderToast(`Model switched to ${getModelDisplayName(chosen)}`);
+  return chosen;
 }

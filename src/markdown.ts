@@ -1,5 +1,6 @@
 import { colors, b } from './theme.ts';
 import { highlightCode, Markdown, getMarkdownTheme } from '@oh-my-pi/pi-tui';
+import { box, stringWidth, stripAnsi, truncate } from './layout.ts';
 
 export interface MarkdownOptions {
   columns?: number;
@@ -108,37 +109,32 @@ export function formatThinkingBlock(
   const durationLabel = durationStr ? ` • ${durationStr}` : '';
 
   if (isCollapsed) {
-    const firstLine = trimmed.split('\n')[0].slice(0, 60);
-    return `${colors.butterPale}🧠 ${colors.bold}Thinking${colors.reset} ${colors.dim}(~${tokenEst} tokens${durationLabel}): ${firstLine}... [type /think to expand]${colors.reset}`;
+    const firstLine = trimmed.split('\n')[0];
+    return (
+      `${colors.butterPale}${colors.bold}Thinking${colors.reset} ` +
+      `${colors.dim}(~${tokenEst} tokens${durationLabel}): ${truncate(firstLine, Math.max(10, width - 46))}… [type /think to expand]${colors.reset}`
+    );
   }
 
-  const title = ` 🧠 Thinking Process (~${tokenEst} tokens${durationLabel}) `;
-  const borderLen = Math.max(0, width - title.length - 4);
-
-  const lines: string[] = [
-    `${colors.butterCrust}╭──${colors.bold}${colors.butterPale}${title}${colors.reset}${colors.butterCrust}${'─'.repeat(borderLen)}╮${colors.reset}`,
-  ];
-
-  // Wrap thinking lines nicely
-  const innerWidth = width - 4;
-  const rawLines = trimmed.split('\n');
-  for (const line of rawLines) {
-    let curr = line;
-    if (!curr) {
-      lines.push(`${colors.butterCrust}│${colors.reset}${' '.repeat(width - 2)}${colors.butterCrust}│${colors.reset}`);
+  const title = `Thinking Process (~${tokenEst} tokens${durationLabel})`;
+  // Wrapped by display width, not `.length`, so wide characters don't overflow.
+  const inner = Math.max(12, width - 4);
+  const wrapped: string[] = [];
+  for (const raw of trimmed.split('\n')) {
+    if (!raw) {
+      wrapped.push('');
       continue;
     }
-    while (curr.length > innerWidth) {
-      const chunk = curr.slice(0, innerWidth);
-      lines.push(`${colors.butterCrust}│${colors.reset} ${colors.dim}${chunk}${colors.reset} ${colors.butterCrust}│${colors.reset}`);
-      curr = curr.slice(innerWidth);
+    let rest = raw;
+    while (stringWidth(rest) > inner) {
+      const chunk = truncate(rest, inner);
+      wrapped.push(chunk.replace(/…$/, ''));
+      rest = rest.slice(stripAnsi(chunk).length);
     }
-    const pad = Math.max(0, innerWidth - curr.length);
-    lines.push(`${colors.butterCrust}│${colors.reset} ${colors.dim}${curr}${colors.reset}${' '.repeat(pad)} ${colors.butterCrust}│${colors.reset}`);
+    wrapped.push(rest);
   }
 
-  lines.push(`${colors.butterCrust}╰${'─'.repeat(width - 2)}╯${colors.reset}`);
-  return lines.join('\n');
+  return box({ title, lines: wrapped.map((l) => colors.dim + l + colors.reset), width }).join('\n');
 }
 
 export class StreamingMarkdownHighlighter {

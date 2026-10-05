@@ -1,4 +1,5 @@
 import { b, colors } from './theme.ts';
+import { columns, termWidth, truncate } from './layout.ts';
 
 export interface SlashCommandInfo {
   command: string;
@@ -163,6 +164,76 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     description: 'Save butter state and exit CLI',
     category: 'Core',
   },
+
+  // Insights & diagnostics
+  {
+    command: '/doctor',
+    description: 'Check the environment: cwd, git, config, write access, colour',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/stats',
+    description: 'Session stats: turns, tool calls, thinking, tokens and spend',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/env',
+    description: 'Show the environment the model is told about',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/tools',
+    description: 'List the tools the model can call, with descriptions',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/test',
+    description: 'Detect and run the project test command',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/outline',
+    argsHint: '[path]',
+    description: 'Structural outline of a file or directory',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/grep',
+    argsHint: '<text>',
+    description: 'Literal search across the workspace',
+    category: 'Diagnostics',
+  },
+
+  // Workflow
+  {
+    command: '/init',
+    description: 'Survey this repo and produce a grounded onboarding brief',
+    category: 'Workflow',
+  },
+  {
+    command: '/checkpoint',
+    argsHint: '[id]',
+    description: 'List checkpoints, or restore one by id',
+    category: 'Workflow',
+  },
+  {
+    command: '/snippet',
+    argsHint: '<name> add|rm <text>',
+    description: 'Reusable saved prompts',
+    category: 'Workflow',
+  },
+
+  {
+    command: '/thinking',
+    argsHint: '[expanded|collapsed|hidden]',
+    description: 'Show the last reasoning block, or set how thinking is displayed',
+    category: 'General',
+  },
+  {
+    command: '/quit',
+    description: 'Exit Beurre',
+    category: 'General',
+  },
 ];
 
 export function getPredictiveMatches(input: string): SlashCommandInfo[] {
@@ -174,22 +245,35 @@ export function getPredictiveMatches(input: string): SlashCommandInfo[] {
   return SLASH_COMMANDS.filter((sc) => sc.command.startsWith(token));
 }
 
-export function formatPredictiveHints(matches: SlashCommandInfo[]): string {
+/**
+ * Renders the command palette. Previously a hardcoded 72-column box whose
+ * `padEnd(28)` was applied to a string that already contained ANSI escapes, so
+ * the padding counted escape bytes instead of visible columns and every row
+ * misaligned and wrapped below ~62 columns.
+ */
+export function formatPredictiveHints(matches: SlashCommandInfo[], width: number = termWidth()): string {
   if (matches.length === 0) return '';
-  const lines: string[] = [
-    `  ${colors.butterMelt}╭── Commands Palette (${matches.length} commands) ────────────────────────────────╮${colors.reset}`,
-  ];
+  const inner = Math.max(12, width - 4);
+  const lines: string[] = [];
 
-  for (const m of matches.slice(0, 10)) {
-    const hint = m.argsHint ? ` ${colors.dim}${m.argsHint}${colors.reset}` : '';
-    const cmdStr = `${colors.bold}${colors.butterGold}${m.command}${colors.reset}${hint}`.padEnd(28, ' ');
-    lines.push(`  ${colors.butterMelt}│${colors.reset}  ${cmdStr} ${colors.gray}• ${m.description}${colors.reset}`);
+  lines.push(
+    `  ${colors.butterMelt}╭──${colors.reset} ${colors.bold}${colors.butterGold}Commands Palette${colors.reset} ${colors.dim}(${matches.length} commands)${colors.reset} ${colors.butterMelt}${'─'.repeat(Math.max(0, inner - 26))}╮${colors.reset}`,
+  );
+
+  const shown = matches.slice(0, 10);
+  for (const m of shown) {
+    const name = `${colors.bold}${colors.butterGold}${m.command}${colors.reset}`;
+    const label = m.argsHint ? `${name} ${colors.dim}${m.argsHint}${colors.reset}` : name;
+    const row = columns(label, `${colors.gray}${m.description}${colors.reset}`, inner);
+    lines.push(`  ${colors.butterMelt}│${colors.reset} ${truncate(row, inner)} ${colors.butterMelt}│${colors.reset}`);
   }
 
-  if (matches.length > 10) {
-    lines.push(`  ${colors.butterMelt}│${colors.reset}  ${colors.dim}... and ${matches.length - 10} more commands (type to filter)${colors.reset}`);
+  if (matches.length > shown.length) {
+    lines.push(
+      `  ${colors.butterMelt}│${colors.reset} ${truncate(`${colors.dim}… ${matches.length - shown.length} more (type to filter)`, inner)} ${colors.butterMelt}│${colors.reset}`,
+    );
   }
 
-  lines.push(`  ${colors.butterMelt}╰────────────────────────────────────────────────────────────────────────╯${colors.reset}`);
+  lines.push(`  ${colors.butterMelt}╰${'─'.repeat(inner)}╯${colors.reset}`);
   return lines.join('\n');
 }

@@ -26,7 +26,9 @@ const DEFAULT_CONFIG: BeurreConfig = {
   relayUrl: 'https://relay-gw.pages.dev/v1',
   relayFallbackUrl: 'https://relay-gateway.isisosiris107.workers.dev/v1',
   webUrl: 'https://relay-gw.pages.dev',
-  apiKey: 'sk-0g9MKSh-9OqKOVgWlvVkx3lgmIS1WQFo',
+  // No baked-in key: a committed credential is a public credential. The key
+  // comes from RELAY_API_KEY, ~/.beurre/config.json, or ~/.omp/agent/models.yml.
+  apiKey: '',
   cookieFile: path.join(os.homedir(), 'model-aggregator', 'cookies.txt'),
   defaultModel: 'glm-5-3-flash',
   subagents: {
