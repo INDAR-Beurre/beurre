@@ -519,16 +519,25 @@ export function markOnboarded(): void {
  * type a command, and what to do when something goes wrong.
  */
 export function renderWelcome(width: number): string[] {
+  // Truncating each step mid-sentence ("/init surveys this repo and explai…")
+  // reads as a rendering bug. Drop whole steps instead; the short list is
+  // still a complete first-run guide.
+  const steps: [string, string][] = [
+    ['Type what you want', 'in plain language'],
+    ['Type / for commands', '/help explains any of them'],
+    ['/init', 'surveys this repo'],
+    ['/doctor', 'checks your setup'],
+  ];
+  const budget = width - 8;
+  const kept = steps.filter(([, note]) => stringWidth(`  1  ${note}`) <= budget).map(([verb, note]) => [verb, note] as [string, string]);
+
   const lines = [
     `${colors.dim}An agentic coding harness. Type a task and press Enter.${colors.reset}`,
     '',
     `${colors.butterGold}  Getting started${colors.reset}`,
-    `  ${colors.dim}1${colors.reset}  Type what you want, in plain language`,
-    `  ${colors.dim}2${colors.reset}  Type ${b.gold('/')} to see every command, ${b.gold('/help')} any time`,
-    `  ${colors.dim}3${colors.reset}  ${b.gold('/init')} surveys this repo and explains how it works`,
-    `  ${colors.dim}4${colors.reset}  ${b.gold('/doctor')} checks your setup if anything looks wrong`,
+    ...kept.map(([verb, note], i) => `  ${colors.dim}${i + 1}${colors.reset}  ${verb}  ${colors.dim}${note}${colors.reset}`),
     '',
-    `${colors.dim}  Escape cancels · Shift+Enter adds a newline · Tab completes${colors.reset}`,
+    `${colors.dim}  ${width < 60 ? 'Esc cancels · Tab completes' : 'Escape cancels · Shift+Enter adds a newline · Tab completes'}${colors.reset}`,
   ];
   return box({ title: 'Welcome', lines: lines.map((l) => truncate(l, width - 4)), width });
 }

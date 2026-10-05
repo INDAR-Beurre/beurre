@@ -132,12 +132,6 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Tools',
   },
   {
-    command: '/export',
-    argsHint: '[path]',
-    description: 'Export conversation session to Markdown file',
-    category: 'Tools',
-  },
-  {
     command: '/undo',
     description: 'Revert the last user and assistant interaction turn',
     category: 'Session',
@@ -277,6 +271,65 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     command: '/preflight',
     description: 'Diagnose why a model is not answering',
     category: 'Diagnostics',
+  },
+  {
+    command: '/log',
+    argsHint: '[n]',
+    description: 'Recent commits with author, date and subject',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/branch',
+    description: 'Current branch, upstream, and how far ahead or behind',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/stash',
+    description: 'List stashed work you can go back to',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/blame',
+    argsHint: '<file>',
+    description: 'Who last touched each line of a file',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/lastcommit',
+    description: 'The most recent commit and the files it touched',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/bisect',
+    description: 'Whether a bisect has run long enough to mean anything',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/ignore',
+    description: 'Every ignore rule in play for this repository',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/ignorecheck',
+    argsHint: '<path>',
+    description: 'Explain why a path is ignored, tracked or untracked',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/wordcount',
+    argsHint: '[path]',
+    description: 'Files, lines and words under a directory',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/todoscan',
+    description: 'Find TODO, FIXME and HACK markers across the tree',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/time',
+    description: 'How long this session has run, and per turn',
+    category: 'General',
   },
   {
     command: '/export',

@@ -10,8 +10,10 @@ import {
   formatWorkingPromptBar,
   formatSteeringPromptBar,
   BeurreWorkingBar,
+  banner,
 } from '../src/theme.ts';
 import { BeurreAgent } from '../src/agent.ts';
+import { stripAnsi, stringWidth } from '../src/layout.ts';
 
 describe('Butter Theme & Status Rendering', () => {
 
@@ -383,5 +385,42 @@ describe('colour palette integrity', () => {
       const emitted = (colors as Record<string, string>)[name];
       expect(emitted === "" || emitted === expected).toBe(true);
     }
+  });
+});
+
+describe('banner', () => {
+  // The model column was truncated with a `width - 34` guess, which cut the
+  // model id mid-word, and the hint line had no short-width fallback.
+  for (const cols of [30, 40, 46, 56, 63, 64, 72, 80, 100, 120]) {
+    it(`never exceeds ${cols} columns`, () => {
+      const prev = process.stdout.columns;
+      process.stdout.columns = cols;
+      const lines = stripAnsi(banner('1.0.0', 'glm-5-3-flash', '/home/alex/Projects/beurre', 'high')).split('\n');
+      process.stdout.columns = prev;
+      for (const line of lines) {
+        expect(stringWidth(line)).toBeLessThanOrEqual(cols);
+      }
+    });
+  }
+
+  it('right-aligns the model and effort columns to the same margin', () => {
+    const prev = process.stdout.columns;
+    process.stdout.columns = 80;
+    const lines = stripAnsi(banner('1.0.0', 'glm-5-3-flash', '/home/alex/Projects/beurre', 'high')).split('\n');
+    process.stdout.columns = prev;
+    const model = lines.find((l) => l.includes('model'));
+    const effort = lines.find((l) => l.includes('effort'));
+    expect(model).toBeDefined();
+    expect(effort).toBeDefined();
+    expect(model!.length).toBe(effort!.length);
+  });
+
+  it('drops the model id and shortens hints on a narrow terminal', () => {
+    const prev = process.stdout.columns;
+    process.stdout.columns = 46;
+    const out = stripAnsi(banner('1.0.0', 'glm-5-3-flash', '/home/alex/Projects/beurre', 'high'));
+    process.stdout.columns = prev;
+    expect(out).not.toContain('glm-5-3-flash');
+    expect(out).toContain('/menu');
   });
 });

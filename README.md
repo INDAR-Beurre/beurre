@@ -114,6 +114,17 @@ Within the interactive REPL (`beurre`):
 | `/cache` | Where the disk went: build output by size |
 | `/keys` | Every editor shortcut, in one screen |
 | `/preflight` | Diagnose why a model is not answering |
+| `/log [n]` | Recent commits with author, date and subject |
+| `/branch` | Current branch, upstream, and how far ahead or behind |
+| `/stash` | List stashed work you can go back to |
+| `/blame <file>` | Who last touched each line of a file |
+| `/lastcommit` | The most recent commit and the files it touched |
+| `/bisect` | Whether a bisect has run long enough to mean anything |
+| `/ignore` | Every ignore rule in play for this repository |
+| `/ignorecheck <path>` | Explain why a path is ignored, tracked or untracked |
+| `/wordcount [path]` | Files, lines and words under a directory |
+| `/todoscan` | Find TODO, FIXME and HACK markers across the tree |
+| `/time` | How long this session has run, and per turn |
 | **Sessions & cloud** | |
 | `/sessions` | List your cloud sessions |
 | `/resume <id>` | Resume a session from the cloud |

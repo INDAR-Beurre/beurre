@@ -3,7 +3,7 @@ import { execSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { getModelDisplayName } from './relay.ts';
-import { colorEnabled, termWidth, truncate, columns } from './layout.ts';
+import { colorEnabled, termWidth, truncate, columns, stringWidth } from './layout.ts';
 
 // Escape codes collapse to '' when colour is off (NO_COLOR, TERM=dumb, pipes),
 // so every styled helper below keeps working unchanged — just without colour.
@@ -127,32 +127,43 @@ export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process
   const git = getGitStatus(cwd);
   const gitTag = git.branch ? `  ${git.branch}${git.isDirty ? '*' : ''}` : '';
   const modelName = getModelDisplayName(model);
-  const modelStr = modelName !== model ? `${modelName} (${model})` : model;
 
+  // Fixed label column. `columns()` right-aligns its right argument, so the
+  // model was drifting against the margin instead of lining up, and the
+  // `width - 34` guess truncated it mid-word ("glm-5…").
+  const LABEL = 9;
+  const room = Math.max(8, width - LABEL - 2);
   const line = (left: string, right = '') => {
     const l = ` ${left}`;
-    return right ? truncate(columns(l, ` ${right}`, width), width) : truncate(l, width);
+    if (!right) return truncate(l, width);
+    const gap = ' '.repeat(Math.max(1, width - stringWidth(l) - stringWidth(right) - 1));
+    return truncate(l, width).slice(0, Math.max(0, width - stringWidth(right) - 1)) + gap + right;
   };
 
   const wordmark = `${colors.bold}${colors.butterGold}beurre${colors.reset}`;
   const rule = `${colors.mutedBox}${'─'.repeat(Math.max(0, width - 1))}${colors.reset}`;
+
+  // Below ~64 columns the model id is noise: keep the display name only.
+  const modelField = width < 64 ? modelName : `${modelName} (${model})`;
+  const hints = width < 56
+    ? 'Type a task.  /menu  /help'
+    : width < 72
+      ? 'Type a task and press Enter.  /menu settings  /help'
+      : 'Type a task and press Enter.  /menu settings  /models switch  /help all commands';
 
   const rows = [
     '',
     rule,
     line(
       `${wordmark} ${colors.dim}v${version}${colors.reset}`,
-      `${colors.dim}${truncate(`model  ${modelStr}`, Math.max(8, width - 34))}${colors.reset}`,
+      `${colors.dim}${truncate(`model  ${modelField}`, Math.max(4, room - 20))}${colors.reset}`,
     ),
     line(
-      `${colors.dim}${truncate(`${formatShortCwd(cwd)}${gitTag}`, Math.max(8, width - 34))}${colors.reset}`,
+      `${colors.dim}${truncate(`${formatShortCwd(cwd)}${gitTag}`, room)}${colors.reset}`,
       `${colors.dim}effort  ${effort}${colors.reset}`,
     ),
     '',
-    `${colors.dim} ${truncate(
-      'Type a task and press Enter.  /menu settings  /models switch  /help all commands',
-      width - 1,
-    )}${colors.reset}`,
+    `${colors.dim} ${truncate(hints, width - 1)}${colors.reset}`,
     rule,
     '',
   ];
@@ -162,13 +173,16 @@ export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process
 
 export function renderErrorCard(title: string, message: string): string {
   const cols = Math.min(process.stdout.columns || 80, 80);
-  const header = ` ${title} `;
+  const header = ` ${truncate(title, Math.max(8, cols - 6))} `;
   const borderLen = Math.max(0, cols - header.length - 4);
 
   const top = `${colors.red}╭──${colors.bold}${header}${colors.reset}${colors.red}${'─'.repeat(borderLen)}╮${colors.reset}`;
   const bottom = `${colors.red}╰${'─'.repeat(cols - 2)}╯${colors.reset}`;
 
-  const lines = message.split('\n').map((l) => `${colors.red}│${colors.reset}  ${l}`);
+  // A message line wider than the frame wraps, and every overlay then erases
+  // by logical line count, so the whole screen drifts for the rest of the
+  // session. Truncate here, once, for every error card in the app.
+  const lines = message.split('\n').map((l) => `${colors.red}│${colors.reset}  ${truncate(l, cols - 4)}`);
   return `\n${top}\n${lines.join('\n')}\n${bottom}\n`;
 }
 

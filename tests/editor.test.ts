@@ -140,6 +140,41 @@ describe('BeurreEditor Engine', () => {
     expect(completed.action).toBe('none');
   });
 
+  it('should submit a command with its arguments intact, never completing it away', () => {
+    // Regression: accepting the single autocomplete match on Enter replaced
+    // the buffer with the bare command, so `/outline src/features.ts` was
+    // dispatched as `/outline` and the argument vanished.
+    const state = createInitialEditorState('/outline src/features.ts', 25);
+    expect(state.autocompleteMatches.length).toBe(1);
+    const res = handleKeyStroke(state, '\r');
+    expect(res.action).toBe('submit');
+    expect(res.submittedValue).toBe('/outline src/features.ts');
+  });
+
+  it('should submit a command whose arguments contain spaces', () => {
+    const state = createInitialEditorState('/grep foo bar', 14);
+    const res = handleKeyStroke(state, '\r');
+    expect(res.action).toBe('submit');
+    expect(res.submittedValue).toBe('/grep foo bar');
+  });
+
+  it('should submit an exactly typed command without appending a space', () => {
+    const state = createInitialEditorState('/outline', 8);
+    const res = handleKeyStroke(state, '\r');
+    expect(res.action).toBe('submit');
+    expect(res.submittedValue).toBe('/outline');
+  });
+
+  it('should submit what was typed when several commands match', () => {
+    // `/t` matches /test, /think, /thinking, /todo. Guessing one of them and
+    // running it instead is worse than submitting the literal text.
+    const state = createInitialEditorState('/t', 2);
+    expect(state.autocompleteMatches.length).toBeGreaterThan(1);
+    const res = handleKeyStroke(state, '\r');
+    expect(res.action).toBe('submit');
+    expect(res.submittedValue).toBe('/t');
+  });
+
   it('should accept ghost suggestion on Right Arrow at end of command', () => {
     const state = createInitialEditorState('/mod', 0);
     const rightKey = handleKeyStroke(state, '\x1b[C');

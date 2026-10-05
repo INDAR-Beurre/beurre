@@ -69,7 +69,9 @@ export function renderMarkdownBlock(text: string, options: MarkdownOptions = {})
     const code = match[2];
     const highlightedLines = highlightCodeBlock(code, lang);
 
-    const title = ` 💻 ${lang} `;
+    // A laptop emoji on every code block is noise; the bare language tag reads
+    // as a deliberate label and costs two fewer columns.
+    const title = ` ${lang} `;
     const borderLen = Math.max(0, cols - title.length - 4);
 
     parts.push(`${colors.butterCrust}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterCrust}${'─'.repeat(borderLen)}╮${colors.reset}`);
@@ -162,7 +164,7 @@ export class StreamingMarkdownHighlighter {
         if (trimmed.startsWith('```')) {
           this.inCodeBlock = true;
           this.currentLang = trimmed.slice(3).trim() || 'code';
-          const title = ` 💻 ${this.currentLang} `;
+          const title = ` ${this.currentLang} `;
           const borderLen = Math.max(0, this.cols - title.length - 4);
           this.onWrite(
             `\n${colors.butterCrust}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterCrust}${'─'.repeat(borderLen)}╮${colors.reset}\n`

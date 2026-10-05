@@ -60,17 +60,16 @@ export function renderModelList(
     const start = Math.min(scrollOffset, Math.max(0, filtered.length - 1));
     const visible = filtered.slice(start, start + pageSize);
 
-    // Reserve a fixed name column so the tags form a clean left edge.
-    // `columns()` right-aligns its second half, which ragged every row.
+    // Two columns, not one. Measuring name+id together put the id flush
+    // against the name ("GLM 5.3 Flash glm-5-3-flash"), which reads as a
+    // single token. Measure each independently.
     const nameCol = Math.min(
-      Math.max(
-        8,
-        ...visible.map((m) => {
-          const d = getModelDisplayName(m.id, models);
-          return stringWidth(d) + (d === m.id ? 0 : stringWidth(m.id) + 1);
-        }),
-      ),
-      Math.floor(cols * 0.55),
+      Math.max(8, ...visible.map((m) => stringWidth(getModelDisplayName(m.id, models)))),
+      Math.floor(cols * 0.45),
+    );
+    const idCol = Math.min(
+      Math.max(6, ...visible.map((m) => stringWidth(m.id))),
+      Math.floor(cols * 0.3),
     );
 
     visible.forEach((m, i) => {
@@ -87,8 +86,6 @@ export function renderModelList(
         : at < 0
           ? `${colors.white}${name}${colors.reset}`
           : `${colors.white}${name.slice(0, at)}${colors.reset}${colors.bold}${colors.butterGold}${name.slice(at, at + query.length)}${colors.reset}${colors.white}${name.slice(at + query.length)}${colors.reset}`;
-      const id = !isSelected && displayName !== m.id ? ` ${colors.dim}${m.id}${colors.reset}` : '';
-
       const ctxTag = m.context_length ? `${colors.cyan}${Math.round(m.context_length / 1000)}k${colors.reset}` : '';
       const reasonTag = m.reasoning_efforts?.length
         ? `${colors.butterPale}${m.reasoning_efforts.slice(0, 2).join(',')}${colors.reset}`
@@ -97,7 +94,11 @@ export function renderModelList(
       const activeTag = m.id === currentModelId ? `${colors.green}active${colors.reset}` : '';
       const tags = [ctxTag, reasonTag, viaTag, activeTag].filter(Boolean).join(` ${colors.dim}·${colors.reset} `);
 
-      const row = `  ${pointer} ${padTo(painted + id, nameCol + 1)}  ${tags}`;
+      // The id only gets its own column when the terminal is wide enough to
+      // keep both legible; below that it is dropped rather than truncated.
+      const room = cols - nameCol - 12;
+      const idCell = room >= idCol ? `${colors.dim}${padTo(m.id, idCol)}${colors.reset}` : '';
+      const row = `  ${pointer} ${padTo(painted, nameCol)}  ${idCell}  ${tags}`;
       lines.push(truncate(row, cols));
     });
     if (start + pageSize < filtered.length) {
@@ -126,7 +127,10 @@ export async function openModelPicker(
   let providers: RelayProvider[] = [];
 
   try {
-    const [m, p] = await Promise.all([relay.listModels(), relay.listProviders()]);
+    // These were `relay.listModels()` / `relay.listProviders()`, which do not
+    // exist on RelayClient — the picker threw a TypeError, the catch fired,
+    // and /models silently returned to the prompt with no picker ever drawn.
+    const [m, p] = await Promise.all([relay.fetchLiveModels(), relay.fetchProviders()]);
     models = m ?? [];
     providers = p ?? [];
   } catch (caught: unknown) {

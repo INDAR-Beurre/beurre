@@ -13,7 +13,8 @@ describe('Predictive Slash Command Engine', () => {
 
   it('should match commands starting with /l', () => {
     const matches = getPredictiveMatches('/l');
-    expect(matches.length).toBe(3);
+    // No count assertion: the number of commands sharing a prefix changes
+    // with every command added. Only the matching behaviour matters.
     const cmds = matches.map((m) => m.command);
     expect(cmds).toContain('/loop');
     expect(cmds).toContain('/login');

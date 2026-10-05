@@ -8,6 +8,29 @@ import {
   analysePrompt,
   clearDoneTodos,
   diagnoseRelay,
+  BISECT_MIN_STEPS,
+  bisectProgress,
+  countTree,
+  currentBranch,
+  describeElapsed,
+  explainIgnored,
+  listStashes,
+  readBlame,
+  readCommits,
+  readIgnoreRules,
+  renderBlame,
+  renderBisect,
+  renderBranch,
+  renderCommits,
+  renderIgnoreCheck,
+  renderIgnoreRules,
+  renderLastCommit,
+  renderMarkers,
+  renderSessionClock,
+  renderStashes,
+  renderWordCount,
+  scanMarkers,
+  type Commit,
   expandAlias,
   exportTranscript,
   formatBytes,
@@ -275,5 +298,150 @@ describe('keybindings', () => {
       expect(b.keys.length).toBeGreaterThan(0);
       expect(b.action.length).toBeGreaterThan(0);
     }
+  });
+});
+// ------------------------------------------------------- round three ----
+
+const REPO = path.resolve(import.meta.dir, '..');
+
+describe('git history commands', () => {
+  test('reads real commits from this repository', () => {
+    const commits = readCommits(REPO, 5);
+    expect(commits.length).toBeGreaterThan(0);
+    expect(commits[0].subject.length).toBeGreaterThan(0);
+    expect(commits[0].short.length).toBeGreaterThanOrEqual(7);
+  });
+
+  test('returns empty rather than throwing outside a repository', () => {
+    expect(readCommits('/tmp')).toEqual([]);
+    expect(listStashes('/tmp')).toEqual([]);
+    expect(readIgnoreRules('/tmp')).toEqual([]);
+  });
+
+  test('blame attributes a known tracked file', () => {
+    const lines = readBlame(REPO, 'src/layout.ts', 5);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines[0].text.length).toBeGreaterThan(0);
+  });
+});
+
+describe('bisect progress', () => {
+  test('refuses to judge a bisect with too few steps', () => {
+    const p = bisectProgress(1);
+    expect(p.ok).toBe(false);
+    expect(p.next).toContain(String(BISECT_MIN_STEPS));
+  });
+  test('reports the halved range once there are enough steps', () => {
+    const p = bisectProgress(10);
+    expect(p.ok).toBe(true);
+    expect(p.next).toContain('5');
+  });
+});
+
+describe('ignorecheck', () => {
+  test('names the rule and file that ignore a build artifact', () => {
+    const r = explainIgnored(REPO, 'node_modules');
+    expect(r.state).toBe('ignored');
+    expect(r.reason.length).toBeGreaterThan(0);
+  });
+  test('reports an untracked source file as addable, not ignored', () => {
+    const r = explainIgnored(REPO, 'README.md');
+    expect(r.state === 'tracked' || r.state === 'untracked').toBe(true);
+    if (r.state === 'untracked') expect(r.reason).toContain('git add');
+  });
+});
+
+describe('tree scanning', () => {
+  test('counts source files and skips vendored trees', () => {
+    const c = countTree(REPO, 'src');
+    expect(c.files).toBeGreaterThan(5);
+    expect(c.lines).toBeGreaterThan(c.files);
+    expect(c.words).toBeGreaterThan(0);
+  });
+  test('finds the marker strings it was asked to find', () => {
+    const hits = scanMarkers(REPO);
+    expect(Array.isArray(hits)).toBe(true);
+    for (const h of hits) {
+      expect(h.file.length).toBeGreaterThan(0);
+      expect(h.line).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('session clock', () => {
+  test('never reports a negative elapsed time when the clock moves backwards', () => {
+    expect(describeElapsed(1000, 500)).toBe('0s');
+  });
+  test('scales from seconds to minutes to hours', () => {
+    expect(describeElapsed(0, 5_000)).toBe('5s');
+    expect(describeElapsed(0, 125_000)).toBe('2m 5s');
+    expect(describeElapsed(0, 3_900_000)).toBe('1h 5m');
+  });
+});
+
+describe('round-three renderers honour the width invariant', () => {
+  const commits: Commit[] = [{ short: 'abc1234', author: 'alex', date: '2026-10-05', subject: 'Fix the thing' }];
+  const renderers: Record<string, (w: number) => string[]> = {
+    renderCommits: (w) => renderCommits(commits, w),
+    renderCommitsEmpty: (w) => renderCommits([], w),
+    renderBranch: (w) => renderBranch({ name: 'main', upstream: 'origin/main', ahead: 2, behind: 5 }, w),
+    renderBranchNoUpstream: (w) => renderBranch({ name: 'main', upstream: null, ahead: 0, behind: 0 }, w),
+    renderStashes: (w) => renderStashes([{ ref: 'stash@{0}', when: '2 hours ago', message: 'work' }], w),
+    renderStashesEmpty: (w) => renderStashes([], w),
+    renderBlame: (w) => renderBlame([{ line: 1, author: 'alex', when: '', text: 'export const x = 1;' }], 'src/a.ts', w),
+    renderBlameEmpty: (w) => renderBlame([], 'src/a.ts', w),
+    renderBisect: (w) => renderBisect({ steps: 10, culprit: 'deadbeef' }, w),
+    renderBisectEarly: (w) => renderBisect({ steps: 1, culprit: null }, w),
+    renderIgnoreRules: (w) => renderIgnoreRules([{ pattern: 'node_modules', source: 'repo' }], w),
+    renderIgnoreRulesEmpty: (w) => renderIgnoreRules([], w),
+    renderIgnoreCheck: (w) => renderIgnoreCheck('dist/x.js', { state: 'ignored', reason: 'dist (repo)' }, w),
+    renderWordCount: (w) => renderWordCount('.', { files: 120, lines: 9000, words: 64000 }, w),
+    renderWordCountZero: (w) => renderWordCount('.', { files: 0, lines: 0, words: 0 }, w),
+    renderMarkers: (w) => renderMarkers([{ file: 'src/a.ts', line: 9, text: '// TODO: fix' }], w),
+    renderMarkersEmpty: (w) => renderMarkers([], w),
+    renderSessionClock: (w) => renderSessionClock(0, 125_000, 7, w),
+    renderSessionClockIdle: (w) => renderSessionClock(0, 1000, 0, w),
+    renderLastCommit: (w) => renderLastCommit('/tmp', w),
+  };
+
+  for (const [name, render] of Object.entries(renderers)) {
+    for (const width of WIDTHS) {
+      test(`${name} fits ${width} columns`, () => {
+        for (const line of render(width)) {
+          expect(stringWidth(stripAnsi(line))).toBeLessThanOrEqual(width);
+        }
+      });
+    }
+  }
+});
+
+describe('every new renderer is reachable from the dispatcher', () => {
+  test('the relay methods the model picker calls actually exist', async () => {
+    // /models rendered nothing at all for the life of the feature: the picker
+    // called relay.listModels()/listProviders(), which do not exist, the
+    // TypeError was swallowed by a catch, and the screen silently returned.
+    const { relay } = await import('../src/relay.ts');
+    expect(typeof relay.fetchLiveModels).toBe('function');
+    expect(typeof relay.fetchProviders).toBe('function');
+  });
+
+  test('every registered command has a dispatcher case', async () => {
+    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+    const repl = fs.readFileSync(path.join(REPO, 'src/repl.ts'), 'utf8');
+    const missing = SLASH_COMMANDS.filter((c) => !repl.includes(`case '${c.command}'`));
+    expect(missing.map((c) => c.command)).toEqual([]);
+  });
+
+  test('no command is registered twice', async () => {
+    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+    const seen = SLASH_COMMANDS.map((c) => c.command);
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  test('every registered command is documented in the README', async () => {
+    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+    const md = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8');
+    const undocumented = SLASH_COMMANDS.filter((c) => !new RegExp(`\`${c.command}[ \`]`).test(md));
+    expect(undocumented.map((c) => c.command)).toEqual([]);
   });
 });

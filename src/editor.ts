@@ -230,11 +230,15 @@ export function handleKeyStroke(
     // here would silently discard everything after the command name.
     if (s.autocompleteMatches.length === 1 && s.selectedAutocompleteIdx === 0) {
       const selected = s.autocompleteMatches[0];
-      if (!selected.argsHint || s.buffer === selected.command) {
-        s.buffer = selected.command;
+      // Either the command is already exact, or arguments are attached.
+      // Both mean the user finished typing: submit verbatim. Completing here
+      // is what made `/outline src/features.ts` arrive as a bare `/outline`.
+      if (s.buffer === selected.command || s.buffer.includes(' ')) {
         s.autocompleteMatches = [];
-        return { state: s, action: 'submit', submittedValue: selected.command };
+        return { state: s, action: 'submit', submittedValue: s.buffer };
       }
+      // Prefix only: offer the completion, but do not submit on Enter — the
+      // command may still take arguments the user has not typed yet.
       s.buffer = selected.command + ' ';
       s.cursor = s.buffer.length;
       s.autocompleteMatches = [];

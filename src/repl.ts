@@ -90,6 +90,25 @@ import {
   renderPreflight,
   renderTokens,
   renderTodos,
+  countTree,
+  currentBranch,
+  explainIgnored,
+  listStashes,
+  readBlame,
+  readCommits,
+  readIgnoreRules,
+  renderBisect,
+  renderBlame,
+  renderBranch,
+  renderCommits,
+  renderIgnoreCheck,
+  renderIgnoreRules,
+  renderLastCommit,
+  renderMarkers,
+  renderSessionClock,
+  renderStashes,
+  renderWordCount,
+  scanMarkers,
   renderWatch,
   saveAlias,
   saveNote,
@@ -147,6 +166,8 @@ export async function startRepl(initialModel?: string): Promise<void> {
   }
 
   let totalTokensEstimate = 0;
+  const sessionStartedAt = Date.now();
+  let turns = 0;
   let activeAbortController: AbortController | null = null;
   let thinkingMode: 'expanded' | 'collapsed' | 'hidden' = 'expanded';
   let lastReasoning = '';
@@ -815,7 +836,15 @@ export async function startRepl(initialModel?: string): Promise<void> {
           const [name, ...body] = rest.split(' ').filter(Boolean);
           if (!name) {
             console.log(`\n${renderAliases(listAliases(), contentWidth())}\n`);
-          } else if (body[0] === 'rm') {
+          } else if (name === 'rm' && body.length === 1) {
+            // `/alias rm ll` reads like "remove ll", but this command is
+            // name-first, so it would create an alias called `rm`. Say which
+            // reading applies instead of quietly doing the surprising one.
+            console.log(`\n${renderErrorCard(
+              'Aliases are /alias <name> [rm] <expansion>',
+              '/alias rm ll would create an alias named rm. To remove one, type /alias ll rm.',
+            )}\n`);
+          } else if (body[0] === 'rm' && body.length === 1) {
             console.log(saveAlias(name, null)
               ? `\n${renderToast(`Removed alias /${name}`, true)}\n`
               : `\n${renderErrorCard('No such alias', name)}\n`);
@@ -847,6 +876,72 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
         case '/cache': {
           console.log(`\n${renderCache(measureCache(agent.getCwd()), contentWidth())}\n`);
+          break;
+        }
+
+        case '/log': {
+          console.log(`\n${renderCommits(readCommits(agent.getCwd()), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/branch': {
+          console.log(`\n${renderBranch(currentBranch(agent.getCwd()), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/stash': {
+          console.log(`\n${renderStashes(listStashes(agent.getCwd()), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/blame': {
+          const file = rest.trim();
+          if (!file) {
+            console.log(`\n${renderErrorCard('blame needs a file', 'Usage: /blame src/index.ts')}\n`);
+            break;
+          }
+          console.log(`\n${renderBlame(readBlame(agent.getCwd(), file), file, contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/lastcommit': {
+          console.log(`\n${renderLastCommit(agent.getCwd(), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/bisect': {
+          console.log(`\n${renderBisect({ steps: agent.getMessages().length, culprit: null }, contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/ignore': {
+          console.log(`\n${renderIgnoreRules(readIgnoreRules(agent.getCwd()), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/ignorecheck': {
+          const target = rest.trim();
+          if (!target) {
+            console.log(`\n${renderErrorCard('ignorecheck needs a path', 'Usage: /ignorecheck dist/bundle.js')}\n`);
+            break;
+          }
+          console.log(`\n${renderIgnoreCheck(target, explainIgnored(agent.getCwd(), target), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/wordcount': {
+          const target = rest.trim() || '.';
+          console.log(`\n${renderWordCount(target, countTree(agent.getCwd(), target), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/todoscan': {
+          console.log(`\n${renderMarkers(scanMarkers(agent.getCwd()), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/time': {
+          console.log(`\n${renderSessionClock(sessionStartedAt, Date.now(), turns, contentWidth()).join('\n')}\n`);
           break;
         }
 
@@ -1016,6 +1111,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
       // Estimate tokens & save response for /copy
       const turnTokens = Math.round((trimmed.length + accumulatedResponse.length + accumulatedReasoning.length) / 4);
       totalTokensEstimate += turnTokens;
+      turns++;
       dailyTokensUsed += turnTokens;
       lastAssistantResponse = accumulatedResponse;
 

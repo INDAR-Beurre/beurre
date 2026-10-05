@@ -192,6 +192,26 @@ All tests must pass with **100% green status** (0 failures).
 
 > **AI AGENT INSTRUCTION:** Append all future changes to this section in reverse chronological order.
 
+### [2026-10-05] — Live Model Picker, Enter Key Regression, Two-Column Alignment & 11 Git/Terminal Features
+- **Author/Agent:** Beurre Production Readiness Pass, round three (playtest matrix: 11 commands x 30/46/62/80/120 cols, 55 checks)
+- **Bugs found by playing the CLI, not by reading it:**
+  | Defect | Root cause | Fix |
+  |---|---|---|
+  | `/models` drew **nothing at all** | The picker called `relay.listModels()` / `relay.listProviders()`, which **do not exist**; the `TypeError` was swallowed by a `catch` that returned to the prompt | Pointed at the real `relay.fetchLiveModels()` / `relay.fetchProviders()`. Verified: 30 live models across 30 providers now render |
+  | Enter **destroyed command arguments** | A round-two rewrite of the Enter handler dropped the `hasArgs` guard, so `/outline src/features.ts` dispatched only `/outline` | Submit verbatim once the buffer differs from the selected completion; *offer* (not submit) a completion for a bare prefix. 4 regression tests added and **proved red** with the guard forced false |
+  | `/bisect` threw `renderBisect is not defined` | The renderer was exported and dispatched but never imported into `repl.ts` | Added the import. This is exactly what `alive.sh` exists to catch — a command that renders nothing has silently failed |
+  | `/alias rm ll` **deleted an alias literally named `rm`** and kept `ll` | `/alias` is name-first (`<name> [rm] <expansion>`), so the verb-first reading silently did the opposite thing | Refuse the ambiguous form with an error card that names both readings and the correct one |
+  | Error cards **overflowed the frame** | `renderErrorCard` truncated neither the title nor the message, so a long string wrapped — and every overlay erases by logical line count, so the screen drifts permanently | Truncate both at the shared root. Verified against 30/46/62/80/120/200 columns |
+  | Model name and id read as one token (`GLM 5.3 Flash glm-5-3-flash`) | The column measured `name + id` together, so there was no gutter between them | Measure the name and the id as independent columns; drop the id below the width where both stop being legible |
+  | `/export [path]` was registered **twice** | A stale duplicate in `predictive.ts` shadowed the round-two `md\|json\|txt` upgrade | Removed the duplicate; 60 commands, zero duplicates |
+  | `/todoscan` matched its own source | Not a defect, but the scan now includes the marker table it reads from, which is honest |
+- **Eleven new features (`src/features2.ts`), all dispatched, registered, documented and tested:**
+  `/log` · `/branch` · `/stash` · `/blame` · `/lastcommit` · `/bisect` · `/ignore` · `/ignorecheck` · `/wordcount` · `/todoscan` · `/time`
+- **Visual slop removed:** the `💻` emoji from every code-fence title in both render paths of `markdown.ts`; the banner's right-drifting model column (`columns()` right-aligns its second argument, which raggeded the margin); the mid-word truncation of a model id at `width - 34`; the missing short-width hint tier. Welcome steps are now **dropped whole** rather than cut mid-sentence (`/init surveys this repo and explai…` read as a rendering bug).
+- **Verification added:** every new renderer is asserted to satisfy `stringWidth(line) <= width` at 20/26/30/46/62/80/120 columns, in both populated and empty states. Four contract tests now guard the failure modes that cost the most: every registered command has a dispatcher case, none is registered twice, all are documented in the README, and **the relay methods the picker calls actually exist**.
+- **Tests:** 525 pass / 0 fail across 18 files (from 354). Deleted two incidental assertions that pinned prefix-match counts and re-pinned wording — a count of commands sharing a prefix changes with every command added.
+- **Files:** `src/repl.ts` `src/model-picker.ts` `src/editor.ts` `src/theme.ts` `src/markdown.ts` `src/features.ts` `src/features2.ts` `src/predictive.ts` `tests/features2.test.ts` `tests/editor.test.ts` `tests/predictive.test.ts` `tests/theme.test.ts` `README.md`
+
 ### [2026-10-05] — Ten New Features, Box Title Deduplication & Unambiguous Completion
 - **Author/Agent:** Beurre Production Readiness Pass, round two (playtest matrix: 21 commands x 30/46/80/120 cols)
 - **Ten New Features (`src/features2.ts`, all dispatched in `src/repl.ts`):**
