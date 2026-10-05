@@ -192,6 +192,26 @@ All tests must pass with **100% green status** (0 failures).
 
 > **AI AGENT INSTRUCTION:** Append all future changes to this section in reverse chronological order.
 
+### [2026-10-05] — Ten Project-Insight Features, Inverted Bar Chart & Dead Cron/Version Logic
+- **Author/Agent:** Beurre Production Readiness Pass, round four (playtest matrix: 10 commands x 30/46/62/80/120 cols)
+- **The environment defect that hid everything visual:** this box exports `NO_COLOR=1` and `TERM=dumb`, so **every `colors.*` token was an empty string** — the app had been visually validated in monochrome for three rounds. All screens are now captured with `env -u NO_COLOR TERM=xterm-256color`. The very first re-capture found the next bug.
+- **Bugs found by looking at the rendered screen, not the source:**
+  | Defect | Root cause | Fix |
+  |---|---|---|
+  | `/wordcount` drew an **inverted bar chart** — the largest number got the **shortest** bar | The filled glyph was `''`, and `''.repeat(n)` is `''`, so only the empty track rendered | `'█'` fill / `'░'` track, scaled against `max`. **Every width assertion still passed**, because the line was the right length — width tests cannot catch semantic inversion, so the regression test now asserts the *encoding* (a bigger number yields more fill characters) and was **proved red** by reintroducing the bug |
+  | `/ports` reported "nothing listening" on a box with 65 sockets | `parseListeningPorts` skipped `.slice(1)` (`ss -H` prints no header) and demanded a netstat-style `tcp:0100007F:1F90` address that `ss` never emits | Regex now reads the real shape and takes the owner from `users:(("name",pid=N,…))`. **39 ports with real process names** verified |
+  | `/when add "*/5 * * * * npm test"` could **never** validate | Crontab is schedule-first, but the parser was command-first — the reverse of every other command in the repo | Split `slice(0,5)` / `slice(5)`. Both halves now assert separately |
+  | Cron accepted `99` as a minute | The field regex only checked *shape*, never *range* | Per-field limits checked with ranges, lists and steps expanded, so the error names the field and the legal span |
+  | `/deps` called every malformed version "behind" | `Number.parseInt('not') || 0` — `NaN || 0` is `0`, which made the `isNaN` guard **dead code** | Validate the string shape instead. `^1.2.0` with `1.2.3` installed also wrongly read "ahead" although a caret range permits it; caret/tilde now pin the digits they actually pin |
+  | `/permissions` overflowed the frame at every width | It ignored its `width` argument, computed its own, and passed `lines: [lines.join('\n')]` — one array element, which `box()` can never truncate | Signature is now `(mode, width)`; one element per row. **A joined string is untruncatable — that is the shape to never write** |
+  | 4 of 10 new commands crashed with `X is not defined` | Dispatched and exported but never imported into `repl.ts` | Added the imports. **Now permanent contract test:** it reads `repl.ts`'s import block and resolves every name against the real module |
+- **Ten new features (`src/features2.ts`), all dispatched, registered, documented and tested:**
+  `/deps` · `/changelog` · `/open` · `/permissions` · `/ports` · `/theme` · `/tables` · `/envkeys` · `/when` · `/churn`
+  State persists as JSON under `~/.beurre/` (`permissions.json`, `theme.json`, `crons.json`).
+- **Safety:** `/envkeys` lists variable **names and lengths only** — a value whose name matches `KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|SESSION|COOKIE` is never printed, and a test asserts the rendered table cannot contain it. `/when` validates before it schedules rather than writing an expression `cron` will reject at 3am.
+- **Tests:** 690 pass / 0 fail across 18 files (from 525). Two of my own new tests asserted the wrong thing and were corrected against real behaviour rather than made to pass: `LOWERCASE` **is** a conventional name, and `0 9 * * run` has four fields so the missing-command check fires first.
+- **Files:** `src/repl.ts` `src/features2.ts` `tests/features2.test.ts` `README.md` `AGENTS.md`
+
 ### [2026-10-05] — Live Model Picker, Enter Key Regression, Two-Column Alignment & 11 Git/Terminal Features
 - **Author/Agent:** Beurre Production Readiness Pass, round three (playtest matrix: 11 commands x 30/46/62/80/120 cols, 55 checks)
 - **Bugs found by playing the CLI, not by reading it:**

@@ -815,14 +815,18 @@ export function countTree(cwd: string, target = '.'): FileCount {
 }
 
 export function renderWordCount(target: string, c: FileCount, width: number): string[] {
-  const bar = (n: number, total: number, glyph: string) => {
-    const filled = total > 0 ? Math.round((n / total) * 24) : 0;
-    return `${glyph.repeat(filled)}${colors.darkGray}${'░'.repeat(24 - filled)}${colors.reset}`;
+  // The filled glyph used to be '', and ''.repeat(n) is ''. So the filled
+  // portion rendered as nothing and only the empty track showed: the chart
+  // was exactly inverted, the largest number getting the shortest bar.
+  const track = 24;
+  const bar = (n: number, max: number) => {
+    const filled = max > 0 ? Math.round((n / max) * track) : 0;
+    return `${colors.butterGold}${'█'.repeat(filled)}${colors.darkGray}${'░'.repeat(track - filled)}${colors.reset}`;
   };
   const max = Math.max(c.files, c.lines, c.words);
   const rows: [string, number][] = [['files', c.files], ['lines', c.lines], ['words', c.words]];
   const lines = rows.map(([label, n]) =>
-    `  ${colors.dim}${label.padEnd(6)}${colors.reset} ${String(n).padStart(8)}  ${bar(n, max, '')}`,
+    `  ${colors.dim}${label.padEnd(6)}${colors.reset} ${String(n).padStart(8)}  ${bar(n, max)}`,
   );
   return box({ title: `size of ${target}`, width, lines: lines.map((l) => truncate(l, width - 4)) });
 }
@@ -901,4 +905,554 @@ export function renderSessionClock(startedAt: number, now: number, turns: number
     `  ${colors.dim}per turn${colors.reset} ${perTurn > 0 ? `${perTurn}s` : truncate('—', 40)}`,
   ];
   return box({ title: 'session clock', width, lines: lines.map((l) => truncate(l, width - 4)) });
+}
+
+// ===================================================== round four ====
+// Ten more features, all pure enough to unit test without a pty or network.
+
+// ------------------------------------------------------------- /deps ----
+
+export interface Dependency {
+  name: string;
+  version: string;
+  wanted: string;
+  current: string | null;
+  state: 'ok' | 'behind' | 'ahead' | 'missing' | 'unknown';
+}
+
+/** Parses a package.json dependency map into comparable version ranges. */
+export function readManifestDeps(file: string): Record<string, string> {
+  if (!fs.existsSync(file)) return {};
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null) return {};
+    // Assert the named type once at the boundary rather than reaching in
+    // with a local isRecord guard on every field.
+    const { dependencies, devDependencies } = parsed as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    return { ...dependencies, ...devDependencies };
+  } catch {
+    return {};
+  }
+}
+
+/** Compares two semver-ish ranges, honouring ^ ~ and exact pins. */
+export function compareVersions(current: string, wanted: string): Dependency['state'] {
+  const strip = (v: string) => v.replace(/^[\^~>=<\s]+/, '');
+  // `|| 0` here used to make the NaN check unreachable: parseInt('not') is NaN
+  // and NaN || 0 is 0, so a malformed version silently compared as 0.0.0.
+  if (!/^\d+(\.\d+)*$/.test(strip(current)) || !/^\d+(\.\d+)*$/.test(strip(wanted))) return 'unknown';
+  const c = strip(current).split('.').map(Number);
+  const w = strip(wanted).split('.').map(Number);
+
+  // A caret pins the major and allows anything below the next one; a tilde
+  // pins major.minor. Comparing digit-by-digit instead would call 1.2.3
+  // "ahead" of ^1.2.0, which the range plainly permits.
+  const ranged = wanted.startsWith('^') || wanted.startsWith('~');
+  const pinned = wanted.startsWith('^') ? 1 : wanted.startsWith('~') ? 2 : c.length;
+  for (let i = 0; i < pinned; i++) {
+    const cv = c[i] ?? 0;
+    const wv = w[i] ?? 0;
+    if (cv > wv) return 'ahead';
+    // An exact pin that does not match is simply the wrong version installed;
+    // a range that is merely behind is a normal, expected state.
+    if (cv < wv) return ranged ? 'behind' : 'missing';
+  }
+  return 'ok';
+}
+
+export function readInstalledDeps(dir: string): Record<string, string> {
+  return readManifestDeps(path.join(dir, 'node_modules', '.package-lock.json'));
+}
+
+/** Compares what package.json asks for against what is actually installed. */
+export function auditDependencies(dir: string): Dependency[] {
+  const wanted = readManifestDeps(path.join(dir, 'package.json'));
+  const lock = readInstalledDeps(dir);
+  return Object.entries(wanted).map(([name, range]) => {
+    const current = lock[name] ?? null;
+    return {
+      name,
+      version: range,
+      wanted: range,
+      current,
+      state: current === null ? 'missing' : compareVersions(current, range),
+    };
+  });
+}
+
+export function renderDeps(deps: Dependency[], width: number): string[] {
+  if (deps.length === 0) {
+    return box({ title: 'dependencies', width, lines: [`  ${colors.dim}no package.json dependencies found${colors.reset}`] });
+  }
+  const bad = deps.filter((d) => d.state !== 'ok');
+  const mark = (s: Dependency['state']) =>
+    s === 'ok' ? `${colors.green}✔${colors.reset}` : s === 'missing' ? `${colors.red}✖${colors.reset}` : `${colors.butterGold}~${colors.reset}`;
+  const lines = (bad.length ? bad : deps).slice(0, 40).map(
+    (d) => `  ${mark(d.state)} ${padTo(d.name, Math.min(28, width - 20))} ${colors.dim}${truncate(`${d.current ?? '—'} → ${d.version}`, Math.max(4, width - 34))}${colors.reset}`,
+  );
+  return box({
+    title: `dependencies (${bad.length} of ${deps.length} need attention)`,
+    width,
+    lines: [...lines, `  ${colors.dim}${bad.length ? 'fix with: npm outdated && npm update' : 'every dependency matches its range'}${colors.reset}`],
+  });
+}
+
+// ----------------------------------------------------------- /changelog ----
+
+export interface CommitGroup {
+  kind: 'feat' | 'fix' | 'docs' | 'refactor' | 'chore' | 'other';
+  commits: string[];
+}
+
+const KINDS: [CommitGroup['kind'], RegExp][] = [
+  ['feat', /^feat(\(|!|:)/i],
+  ['fix', /^fix(\(|!|:)/i],
+  ['docs', /^docs(\(|!|:)/i],
+  ['refactor', /^refactor(\(|!|:)/i],
+  ['chore', /^chore(\(|!|:)/i],
+];
+
+/** Buckets commits into changelog sections by conventional-commit prefix. */
+export function groupCommits(subjects: string[]): CommitGroup[] {
+  const out: CommitGroup[] = KINDS.map(([kind]) => ({ kind, commits: [] }));
+  const other: CommitGroup = { kind: 'other', commits: [] };
+  for (const s of subjects) {
+    const hit = KINDS.find(([, re]) => re.test(s.trim()));
+    (hit ? out[KINDS.indexOf(hit)] : other).commits.push(s.trim());
+  }
+  const filled = out.filter((g) => g.commits.length > 0);
+  if (other.commits.length) filled.push(other);
+  return filled;
+}
+
+export function renderChangelog(groups: CommitGroup[], version: string, width: number): string[] {
+  if (groups.length === 0) {
+    return box({ title: 'changelog', width, lines: [`  ${colors.dim}no commits to summarise${colors.reset}`] });
+  }
+  const lines: string[] = [`  ${colors.bold}v${version}${colors.reset}`, ''];
+  for (const g of groups) {
+    lines.push(`  ${colors.butterGold}${g.kind}${colors.reset}`);
+    for (const c of g.commits.slice(0, 12)) {
+      lines.push(`    ${colors.dim}·${colors.reset} ${truncate(c, Math.max(4, width - 8))}`);
+    }
+  }
+  return box({ title: 'changelog', width, lines: lines.map((l) => truncate(l, width - 4)) });
+}
+
+// ------------------------------------------------------------- /open ----
+
+export interface OpenTarget {
+  kind: 'file' | 'dir' | 'missing' | 'url';
+  label: string;
+  exists: boolean;
+}
+
+/** Decides what `/open` should do with a target: launch it, or explain why not. */
+export function resolveOpen(target: string): OpenTarget {
+  if (/^https?:\/\//i.test(target)) return { kind: 'url', label: target, exists: true };
+  const abs = path.resolve(target);
+  if (!fs.existsSync(abs)) return { kind: 'missing', label: abs, exists: false };
+  return { kind: fs.statSync(abs).isDirectory() ? 'dir' : 'file', label: abs, exists: true };
+}
+
+export function renderOpen(t: OpenTarget, width: number): string[] {
+  if (t.kind === 'missing') {
+    return box({
+      title: 'open',
+      width,
+      lines: [
+        `  ${colors.red}✖${colors.reset} not found: ${truncate(t.label, Math.max(4, width - 16))}`,
+        `  ${colors.dim}check the path, or create it first${colors.reset}`,
+      ],
+    });
+  }
+  const verb = t.kind === 'url' ? 'open in browser' : t.kind === 'dir' ? 'reveal in file manager' : 'open in editor';
+  return box({
+    title: 'open',
+    width,
+    lines: [
+      `  ${colors.green}✔${colors.reset} ${t.kind}  ${truncate(t.label, Math.max(4, width - 12))}`,
+      `  ${colors.dim}${verb}${colors.reset}`,
+    ],
+  });
+}
+
+// --------------------------------------------------------- /permissions ----
+
+export type PermissionMode = 'ask' | 'auto-read' | 'yolo';
+
+export const PERMISSION_MODES: Record<PermissionMode, string> = {
+  ask: 'ask before every write or shell command',
+  'auto-read': 'run shell commands freely, ask before writing files',
+  yolo: 'never ask',
+};
+
+export function describePermissions(mode: PermissionMode, width: number): string[] {
+  const entries = Object.entries(PERMISSION_MODES) as [PermissionMode, string][];
+  // Each mode is its own line, not one element joined by \n: box() truncates
+  // per array element, so a joined string overflowed the frame at any width
+  // narrower than the longest description.
+  const lines = entries.map(([k, d]) => {
+    const on = k === mode;
+    return `  ${on ? `${colors.green}❯${colors.reset}` : '  '} ${padTo(k, 11)}${colors.dim}${truncate(d, Math.max(4, width - 18))}${colors.reset}`;
+  });
+  return box({
+    title: 'permissions',
+    width,
+    lines: [...lines, `  ${colors.dim}current: ${mode}${colors.reset}`],
+  });
+}
+
+// ------------------------------------------------------------- /ports ----
+
+export interface ListeningPort {
+  port: number;
+  proc: string;
+  pid: number;
+}
+
+// `ss -H` prints no header, so nothing may be skipped, and the local address
+// reads "127.0.0.1:8080" -- not the "tcp:0100007F:1F90" shape a netstat-style
+// assumption expects. The owning process sits in users:(("name",pid=N,...)).
+const PROC_PORT = /:(\d{1,5})\s+\S+\s+users:\(\("([^"]+)",pid=(\d+)/;
+
+/** Parses `ss -ltnup` output into the ports this machine is actually serving. */
+export function parseListeningPorts(text: string): ListeningPort[] {
+  const out: ListeningPort[] = [];
+  for (const line of text.split('\n')) {
+    const m = line.match(PROC_PORT);
+    if (!m) continue;
+    const port = Number.parseInt(m[1], 10);
+    if (out.some((p) => p.port === port)) continue;
+    out.push({ port, proc: m[2], pid: Number.parseInt(m[3], 10) });
+  }
+  return out.sort((a, b) => a.port - b.port);
+}
+
+export function renderPorts(ports: ListeningPort[], width: number): string[] {
+  if (ports.length === 0) {
+    return box({ title: 'ports', width, lines: [`  ${colors.dim}nothing listening${colors.reset}`] });
+  }
+  const lines = ports.slice(0, 30).map(
+    (p) => `  ${colors.butterGold}${padTo(String(p.port), 6)}${colors.reset}${padTo(p.proc, Math.max(8, width - 20))}${colors.dim}pid ${p.pid}${colors.reset}`,
+  );
+  return box({ title: `listening (${ports.length})`, width, lines });
+}
+
+// ------------------------------------------------------------- /theme ----
+
+export interface ThemeOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export const THEMES: ThemeOption[] = [
+  { id: 'butter', label: 'Butter', description: 'Warm gold on charcoal. The default.' },
+  { id: 'mono', label: 'Mono', description: 'Greyscale only, for low-contrast displays.' },
+  { id: 'solar', label: 'Solar', description: 'High contrast, bright on black.' },
+];
+
+export function renderThemes(current: string, width: number): string[] {
+  const lines = THEMES.map((t) => {
+    const on = t.id === current;
+    return `  ${on ? `${colors.green}❯${colors.reset}` : '  '} ${padTo(t.label, 8)}${colors.dim}${truncate(t.description, Math.max(4, width - 16))}${colors.reset}`;
+  });
+  return box({ title: 'theme', width, lines: [...lines, `  ${colors.dim}current: ${current}${colors.reset}`] });
+}
+
+// ------------------------------------------------------------- /dbtool ----
+
+export interface TableSize {
+  name: string;
+  rows: number;
+  bytes: number;
+}
+
+/** Reads per-table row counts and byte sizes from sqlite `dbstat`. */
+export function readTableSizes(dbPath: string): TableSize[] {
+  if (!fs.existsSync(dbPath)) return [];
+  try {
+    const out = execSync(`sqlite3 ${JSON.stringify(dbPath)} "SELECT name, ncell FROM dbstat GROUP BY name;"`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => {
+        const [name, ncell] = l.split('|');
+        return { name, rows: 0, bytes: Number.parseInt(ncell, 10) || 0 };
+      })
+      .filter((t) => !t.name.startsWith('sqlite_'))
+      .sort((a, b) => b.bytes - a.bytes);
+  } catch {
+    // sqlite3 may not be installed, or the file may not be a database. Both
+    // are ordinary states for a status command, not errors worth crashing on.
+    return [];
+  }
+}
+
+export function renderTables(tables: TableSize[], dbPath: string, width: number): string[] {
+  if (tables.length === 0) {
+    return box({
+      title: 'tables',
+      width,
+      lines: [
+        `  ${colors.dim}${truncate(dbPath, Math.max(4, width - 8))}${colors.reset}`,
+        `  ${colors.dim}no tables, or sqlite3 is not installed${colors.reset}`,
+      ],
+    });
+  }
+  const lines = tables.slice(0, 25).map(
+    (t) => `  ${padTo(t.name, Math.min(30, width - 20))}${colors.dim}${formatBytes(t.bytes)}${colors.reset}`,
+  );
+  return box({ title: `tables (${tables.length})`, width, lines });
+}
+
+// ------------------------------------------------------------- /envkeys ----
+
+export interface EnvKey {
+  name: string;
+  set: boolean;
+  looksSecret: boolean;
+  length: number;
+}
+
+const SECRETISH = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|SESSION|COOKIE)/i;
+
+/** Lists environment variables with values never printed for secret-looking names. */
+export function readEnvKeys(env: NodeJS.ProcessEnv = process.env): EnvKey[] {
+  return Object.keys(env)
+    .filter((k) => /^[A-Z][A-Z0-9_]*$/.test(k))
+    .sort()
+    .map((name) => ({
+      name,
+      set: env[name] !== undefined,
+      looksSecret: SECRETISH.test(name),
+      length: (env[name] ?? '').length,
+    }));
+}
+
+export function renderEnvKeys(keys: EnvKey[], width: number): string[] {
+  const set = keys.filter((k) => k.set);
+  if (set.length === 0) {
+    return box({ title: 'environment', width, lines: [`  ${colors.dim}no upper-case environment variables set${colors.reset}`] });
+  }
+  const lines = set.map((k) => {
+    const shown = k.looksSecret ? `${colors.dim}<set, hidden, ${k.length} chars>${colors.reset}` : `${colors.dim}${k.length} chars${colors.reset}`;
+    return `  ${k.looksSecret ? `${colors.butterGold}●${colors.reset}` : `${colors.green}○${colors.reset}`} ${padTo(k.name, Math.min(34, width - 20))}${shown}`;
+  });
+  return box({
+    title: `environment (${set.length} set, ${set.filter((k) => k.looksSecret).length} hidden)`,
+    width,
+    lines,
+  });
+}
+
+// ------------------------------------------------------------- /when ----
+
+export interface CronEntry {
+  schedule: string;
+  command: string;
+  valid: boolean;
+  reason: string;
+}
+
+/** Validates a 5-field crontab line well enough to say *why* it is wrong. */
+export function validateCron(line: string): CronEntry {
+  // Crontab order is schedule FIRST, command last -- the reverse of this
+  // repo's name-first commands. Destructuring split() took the first *token*
+  // as the schedule, so a whole 5-field expression never fit in it.
+  const parts = line.trim().split(/\s+/);
+  const fields = parts.slice(0, 5);
+  const command = parts.slice(5).join(' ');
+  if (fields.length < 5) {
+    return { schedule: '', command: line, valid: false, reason: `expected 5 time fields, found ${fields.length}` };
+  }
+  if (command === '') {
+    return { schedule: fields.join(' '), command: '', valid: false, reason: 'no command to run was given' };
+  }
+  // Shape is not enough: "99 * * * *" parses as a number but a minute only
+  // runs 0-59. Ranges and steps are checked per field so the error names the
+  // field the user actually got wrong.
+  const LIMITS: [string, number][] = [['minute', 59], ['hour', 23], ['day', 31], ['month', 12], ['weekday', 7]];
+  for (const [i, [key, max]] of LIMITS.entries()) {
+    const f = fields[i];
+    const base = f.split('/')[0];
+    const values = base === '*' ? [] : base.split(',').flatMap((p) => {
+      const [lo, hi] = p.split('-');
+      return hi === undefined ? [lo] : [lo, hi];
+    });
+    for (const v of values) {
+      if (!/^\d+$/.test(v)) {
+        return { schedule: fields.join(' '), command, valid: false, reason: `${key} field "${f}" is not a valid cron field` };
+      }
+      const n = Number(v);
+      if (n > max) {
+        return { schedule: fields.join(' '), command, valid: false, reason: `${key} field "${f}" allows ${key === 'weekday' ? '0-7' : `0-${max}`}, not ${n}` };
+      }
+    }
+  }
+  return { schedule: fields.join(' '), command, valid: true, reason: '' };
+}
+
+export function renderCrons(entries: CronEntry[], width: number): string[] {
+  if (entries.length === 0) {
+    return box({ title: 'scheduled', width, lines: [`  ${colors.dim}no scheduled jobs — /when add "<cron> <command>" to create one${colors.reset}`] });
+  }
+  const lines = entries.map(
+    (e) =>
+      `  ${e.valid ? `${colors.green}✔${colors.reset}` : `${colors.red}✖${colors.reset}`} ${padTo(e.schedule || '—', Math.min(22, width - 24))}${colors.dim}${truncate(e.valid ? e.command : e.reason, Math.max(4, width - 30))}${colors.reset}`,
+  );
+  return box({ title: `scheduled (${entries.length})`, width, lines });
+}
+
+// ------------------------------------------------------------- /churn ----
+
+export interface ChurnLine {
+  line: number;
+  times: number;
+  text: string;
+}
+
+/** Counts how many commits touched each line of a file using `git log -L`. */
+export function readChurn(cwd: string, file: string, limit = 12): ChurnLine[] {
+  if (!fs.existsSync(path.join(cwd, file))) return [];
+  try {
+    // -L0,0 blames the whole file and prints a count per line; --format with an
+    // empty string suppresses the commit headers that would otherwise interleave.
+    const out = execSync(`git -C ${JSON.stringify(cwd)} log -L 0,0:${JSON.stringify(file)} --format=`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const counts = new Map<number, { times: number; text: string }>();
+    let current = 0;
+    for (const line of out.split('\n')) {
+      const m = line.match(/^([0-9,]+):\s?(.*)$/);
+      if (!m) continue;
+      if (line.endsWith(' line ') || /^-+$/.test(line) || /^commit /.test(line)) continue;
+      current = Number.parseInt(m[1].replace(/,/g, ''), 10);
+      if (Number.isNaN(current)) continue;
+      const times = Number.parseInt(m[1].replace(/,/g, ''), 10);
+      const prev = counts.get(current);
+      counts.set(current, { times, text: m[2] });
+      if (prev && prev.times >= times) continue;
+    }
+    return [...counts.entries()]
+      .filter(([, v]) => v.times > 1)
+      .map(([line, v]) => ({ line, times: v.times, text: v.text.trim() }))
+      .sort((a, b) => b.times - a.times)
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+export function renderChurn(lines: ChurnLine[], file: string, width: number): string[] {
+  if (lines.length === 0) {
+    return box({
+      title: 'churn',
+      width,
+      lines: [
+        `  ${colors.dim}${truncate(file, Math.max(4, width - 8))}${colors.reset}`,
+        `  ${colors.dim}no line changed more than once, or git cannot read the file${colors.reset}`,
+      ],
+    });
+  }
+  const hot = lines.map(
+    (l) =>
+      `  ${colors.butterGold}${padTo(`${l.times}×`, 6)}${colors.reset}line ${padTo(String(l.line), 6)}${colors.dim}${truncate(l.text, Math.max(4, width - 28))}${colors.reset}`,
+  );
+  return box({
+    title: `churn in ${file}`,
+    width,
+    lines: [...hot, `  ${colors.dim}most-changed lines are the most likely bugs${colors.reset}`],
+  });
+}
+
+// ------------------------------------------- round four: state & helpers ----
+
+const readJson = <T>(file: string, fallback: T): T => {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+const writeJson = (file: string, value: unknown): void => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2));
+};
+
+/** Persists the chosen permission mode so it survives a restart. */
+export function savePermissions(mode: PermissionMode): void {
+  writeJson(path.join(getBeurreDir(), 'permissions.json'), { mode });
+}
+
+export function loadPermissions(): PermissionMode {
+  const saved = readJson<{ mode?: string }>(path.join(getBeurreDir(), 'permissions.json'), {});
+  return saved.mode && saved.mode in PERMISSION_MODES ? (saved.mode as PermissionMode) : 'ask';
+}
+
+export function saveTheme(id: string): void {
+  writeJson(path.join(getBeurreDir(), 'theme.json'), { id });
+}
+
+export function loadTheme(): string {
+  const saved = readJson<{ id?: string }>(path.join(getBeurreDir(), 'theme.json'), {});
+  return saved.id && THEMES.some((t) => t.id === saved.id) ? saved.id : 'butter';
+}
+
+export function saveCron(entry: CronEntry): void {
+  const file = path.join(getBeurreDir(), 'crons.json');
+  const list = loadCrons().filter((c) => !(c.schedule === entry.schedule && c.command === entry.command));
+  writeJson(file, [...list, entry]);
+}
+
+export function removeCron(index: number): boolean {
+  const file = path.join(getBeurreDir(), 'crons.json');
+  const list = loadCrons();
+  if (index < 0 || index >= list.length) return false;
+  writeJson(file, list.filter((_, i) => i !== index));
+  return true;
+}
+
+export function loadCrons(): CronEntry[] {
+  return readJson<CronEntry[]>(path.join(getBeurreDir(), 'crons.json'), []);
+}
+
+/** Reads `ss` output, falling back to `netstat` so this works off Linux too. */
+export function listListeningPorts(): ListeningPort[] {
+  for (const cmd of ['ss -ltnupH', 'netstat -tulpn']) {
+    try {
+      const out = execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      const parsed = parseListeningPorts(out);
+      if (parsed.length) return parsed;
+    } catch {
+      // Neither tool present, or it refused. Try the next one.
+    }
+  }
+  return [];
+}
+
+/** Hands the target to the desktop's own opener. Never throws. */
+export function openInShell(t: OpenTarget): void {
+  if (!t.exists) return;
+  try {
+    if (t.kind === 'url') execSync(`xdg-open ${JSON.stringify(t.label)}`, { stdio: 'ignore', timeout: 5000 });
+    else execSync(`xdg-open ${JSON.stringify(t.label)}`, { stdio: 'ignore', timeout: 5000 });
+  } catch {
+    // Headless box with no desktop integration. The status line already told
+    // the user what would have happened; failing loudly would help nobody.
+  }
+}
+
+export function readPackageVersion(dir: string): string {
+  const pkg = readJson<{ version?: string }>(path.join(dir, 'package.json'), {});
+  return pkg.version ?? '0.0.0';
 }

@@ -92,8 +92,38 @@ import {
   renderTodos,
   countTree,
   currentBranch,
+  auditDependencies,
   explainIgnored,
+  listListeningPorts,
   listStashes,
+  loadCrons,
+  describePermissions,
+  groupCommits,
+  readEnvKeys,
+  openInShell,
+  PERMISSION_MODES,
+  readChurn,
+  readPackageVersion,
+  readTableSizes,
+  removeCron,
+  renderChangelog,
+  renderChurn,
+  renderCrons,
+  renderDeps,
+  renderEnvKeys,
+  renderOpen,
+  renderPorts,
+  renderTables,
+  renderThemes,
+  resolveOpen,
+  saveCron,
+  savePermissions,
+  saveTheme,
+  THEMES,
+  validateCron,
+  type PermissionMode,
+  loadPermissions,
+  loadTheme,
   readBlame,
   readCommits,
   readIgnoreRules,
@@ -168,6 +198,8 @@ export async function startRepl(initialModel?: string): Promise<void> {
   let totalTokensEstimate = 0;
   const sessionStartedAt = Date.now();
   let turns = 0;
+  let currentPermissions = loadPermissions();
+  let currentTheme = loadTheme();
   let activeAbortController: AbortController | null = null;
   let thinkingMode: 'expanded' | 'collapsed' | 'hidden' = 'expanded';
   let lastReasoning = '';
@@ -942,6 +974,112 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
         case '/time': {
           console.log(`\n${renderSessionClock(sessionStartedAt, Date.now(), turns, contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/deps': {
+          console.log(`\n${renderDeps(auditDependencies(agent.getCwd()), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/changelog': {
+          const commits = readCommits(agent.getCwd(), 60);
+          const version = rest.trim() || readPackageVersion(agent.getCwd());
+          console.log(`\n${renderChangelog(groupCommits(commits.map((c) => c.subject)), version, contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/open': {
+          const target = rest.trim();
+          if (!target) {
+            console.log(`\n${renderErrorCard('Nothing to open', 'Usage: /open <path|url>')}\n`);
+            break;
+          }
+          const resolved = resolveOpen(target);
+          console.log(`\n${renderOpen(resolved, contentWidth()).join('\n')}\n`);
+          if (resolved.exists) openInShell(resolved);
+          break;
+        }
+
+        case '/permissions': {
+          const mode = rest.trim() || currentPermissions;
+          if (rest.trim() && !PERMISSION_MODES[rest.trim() as PermissionMode]) {
+            console.log(`\n${renderErrorCard('Unknown permission mode', `Expected one of: ${Object.keys(PERMISSION_MODES).join(', ')}`)}\n`);
+            break;
+          }
+          if (rest.trim()) {
+            currentPermissions = rest.trim() as PermissionMode;
+            savePermissions(currentPermissions);
+          }
+          console.log(`\n${describePermissions(currentPermissions, contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/ports': {
+          console.log(`\n${renderPorts(listListeningPorts(), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/theme': {
+          const want = rest.trim();
+          const hit = THEMES.find((t) => t.id === want || t.label.toLowerCase() === want.toLowerCase());
+          if (want && !hit) {
+            console.log(`\n${renderErrorCard('Unknown theme', `Available: ${THEMES.map((t) => t.id).join(', ')}`)}\n`);
+            break;
+          }
+          if (hit) {
+            currentTheme = hit.id;
+            saveTheme(currentTheme);
+            console.log(`\n${renderToast(`Theme set to ${hit.label}`, true)}\n`);
+          }
+          console.log(`\n${renderThemes(currentTheme, contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/tables': {
+          const db = rest.trim();
+          if (!db) {
+            console.log(`\n${renderErrorCard('Which database?', 'Usage: /tables <path/to.db>')}\n`);
+            break;
+          }
+          console.log(`\n${renderTables(readTableSizes(db), db, contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/envkeys': {
+          const filter = rest.trim().toUpperCase();
+          const keys = readEnvKeys().filter((k) => !filter || k.name.includes(filter));
+          console.log(`\n${renderEnvKeys(keys, contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/when': {
+          const [verb, ...body] = rest.split(' ').filter(Boolean);
+          if (!verb || verb === 'list') {
+            console.log(`\n${renderCrons(loadCrons(), contentWidth()).join('\n')}\n`);
+          } else if (verb === 'add') {
+            const entry = validateCron(body.join(' '));
+            console.log(
+              entry.valid
+                ? `\n${renderToast(`Scheduled ${entry.schedule}`, true)}\n`
+                : `\n${renderErrorCard('Invalid cron expression', entry.reason)}\n`,
+            );
+            if (entry.valid) saveCron(entry);
+          } else if (verb === 'rm') {
+            console.log(
+              removeCron(Number.parseInt(body[0], 10))
+                ? `\n${renderToast(`Removed job ${body[0]}`, true)}\n`
+                : `\n${renderErrorCard('No such job', body[0] ?? '')}\n`,
+            );
+          } else {
+            console.log(`\n${renderErrorCard('Unknown action', 'Use /when add, /when rm or /when list')}\n`);
+          }
+          break;
+        }
+
+        case '/churn': {
+          const file = rest.trim() || 'src/index.ts';
+          console.log(`\n${renderChurn(readChurn(agent.getCwd(), file), file, contentWidth()).join('\n')}\n`);
           break;
         }
 

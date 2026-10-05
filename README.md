@@ -125,6 +125,16 @@ Within the interactive REPL (`beurre`):
 | `/wordcount [path]` | Files, lines and words under a directory |
 | `/todoscan` | Find TODO, FIXME and HACK markers across the tree |
 | `/time` | How long this session has run, and per turn |
+| `/deps [path]` | Which installed dependencies no longer match package.json |
+| `/changelog [version]` | Group recent commits into a release changelog |
+| `/open <path\|url>` | Open a file, folder or URL in the right application |
+| `/permissions [mode]` | `ask`, `auto-read` or `yolo` — how much runs without asking |
+| `/ports` | What this machine is listening on, and which process owns it |
+| `/theme [name]` | Switch the colour theme |
+| `/tables <db>` | Which tables in a SQLite database take the most space |
+| `/envkeys [filter]` | Which environment variables are set, hiding secret values |
+| `/when add\|rm\|list` | Schedule work on a cron expression, validated before saving |
+| `/churn [file]` | Which lines of a file change most often |
 | **Sessions & cloud** | |
 | `/sessions` | List your cloud sessions |
 | `/resume <id>` | Resume a session from the cloud |

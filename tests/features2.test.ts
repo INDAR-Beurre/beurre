@@ -31,6 +31,23 @@ import {
   renderWordCount,
   scanMarkers,
   type Commit,
+  auditDependencies,
+  compareVersions,
+  describePermissions,
+  groupCommits,
+  parseListeningPorts,
+  readEnvKeys,
+  renderChangelog,
+  renderChurn,
+  renderCrons,
+  renderDeps,
+  renderEnvKeys,
+  renderOpen,
+  renderPorts,
+  renderTables,
+  renderThemes,
+  resolveOpen,
+  validateCron,
   expandAlias,
   exportTranscript,
   formatBytes,
@@ -442,6 +459,208 @@ describe('every new renderer is reachable from the dispatcher', () => {
     const { SLASH_COMMANDS } = await import('../src/predictive.ts');
     const md = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8');
     const undocumented = SLASH_COMMANDS.filter((c) => !new RegExp(`\`${c.command}[ \`]`).test(md));
+    expect(undocumented.map((c) => c.command)).toEqual([]);
+  });
+});
+
+describe('bar charts encode the number they claim to', () => {
+  // Regression: the filled glyph was '', so ''.repeat(n) rendered nothing
+  // and only the empty track showed. Bigger numbers drew SHORTER bars, and
+  // every width assertion still passed because the line was the right length.
+  const rowBars = (c: { files: number; lines: number; words: number }, width = 80) =>
+    renderWordCount('src', c, width)
+      .map((l) => stripAnsi(l))
+      .filter((l) => /files|lines|words/.test(l))
+      .map((l) => l.slice(l.indexOf('█' === '' ? 0 : 0)).match(/[█░]/g)?.join('') ?? '');
+
+  test('a bigger number never draws a shorter bar', () => {
+    const bars = rowBars({ files: 10, lines: 100, words: 1000 });
+    const filled = bars.map((b) => (b.match(/█/g) ?? []).length);
+    expect(filled[0]).toBeLessThan(filled[1]);
+    expect(filled[1]).toBeLessThan(filled[2]);
+  });
+
+  test('the largest value fills the whole track', () => {
+    const bars = rowBars({ files: 1, lines: 2, words: 100000 });
+    expect((bars[2].match(/█/g) ?? []).length).toBe(24);
+  });
+
+  test('an all-zero tree draws empty tracks, not a crash', () => {
+    const bars = rowBars({ files: 0, lines: 0, words: 0 });
+    for (const b of bars) expect(b).toBe('░'.repeat(24));
+  });
+});
+
+// ------------------------------------------------------- round four ----
+
+describe('dependency audit', () => {
+  test('compares an installed version against the wanted range', () => {
+    expect(compareVersions('1.2.3', '^1.2.0')).toBe('ok');
+    expect(compareVersions('1.2.3', '1.2.3')).toBe('ok');
+    expect(compareVersions('1.2.3', '^2.0.0')).toBe('behind');
+    expect(compareVersions('3.0.0', '^2.0.0')).toBe('ahead');
+  });
+  test('an exact pin behind is missing, not merely behind', () => {
+    expect(compareVersions('1.0.0', '1.2.0')).toBe('missing');
+    expect(compareVersions('1.0.0', '~1.2.0')).toBe('behind');
+  });
+  test('a malformed version is unknown rather than a wrong answer', () => {
+    expect(compareVersions('not-a-version', '^1.0.0')).toBe('unknown');
+  });
+  test('a missing package.json yields no dependencies, not a throw', () => {
+    expect(auditDependencies('/tmp')).toEqual([]);
+  });
+});
+
+describe('changelog grouping', () => {
+  test('buckets conventional commits and keeps the rest', () => {
+    const g = groupCommits(['feat: add x', 'fix: y', 'docs: z', 'random thing']);
+    expect(g.map((x) => x.kind)).toEqual(['feat', 'fix', 'docs', 'other']);
+    expect(g[0].commits).toEqual(['feat: add x']);
+  });
+  test('empty sections are omitted entirely', () => {
+    expect(groupCommits(['fix: a']).map((g) => g.kind)).toEqual(['fix']);
+  });
+  test('a scoped commit still classifies', () => {
+    expect(groupCommits(['feat(api): add route'])[0].kind).toBe('feat');
+  });
+});
+
+describe('cron validation', () => {
+  test('accepts a well-formed expression and reports why others fail', () => {
+    expect(validateCron('0 9 * * 1-5 backup').valid).toBe(true);
+    expect(validateCron('99 * * * * run').reason).toContain('minute');
+    expect(validateCron('0 9 * run').reason).toContain('expected 5 time fields');
+  });
+  test('the command is separated from the schedule', () => {
+    const e = validateCron('*/5 * * * * npm test');
+    expect(e.schedule).toBe('*/5 * * * *');
+    expect(e.command).toBe('npm test');
+  });
+});
+
+describe('env keys never print a secret value', () => {
+  const env = { API_KEY: 'sk-should-never-appear', HOME: '/home/alex', LOWERCASE: 'x', PATH: '/usr/bin' };
+  test('a secret-looking name is flagged and its length kept', () => {
+    const keys = readEnvKeys(env as NodeJS.ProcessEnv);
+    const k = keys.find((x) => x.name === 'API_KEY');
+    expect(k?.looksSecret).toBe(true);
+    expect(k?.length).toBe('sk-should-never-appear'.length);
+  });
+  test('the rendered table cannot contain the value', () => {
+    const out = renderEnvKeys(readEnvKeys(env as NodeJS.ProcessEnv), 80).join('\n');
+    expect(stripAnsi(out)).not.toContain('sk-should-never-appear');
+    expect(stripAnsi(out)).toContain('API_KEY');
+  });
+  test('only conventional upper-case names are listed', () => {
+    const mixed = { ...env, lower_case: 'x', '2BAD': 'y' };
+    const names = readEnvKeys(mixed as NodeJS.ProcessEnv).map((k) => k.name);
+    expect(names).toContain('HOME');
+    expect(names).toContain('API_KEY');
+    expect(names).toContain('LOWERCASE');
+    expect(names).not.toContain('lower_case');
+    expect(names).not.toContain('2BAD');
+  });
+});
+
+describe('port parsing', () => {
+  const SS = [
+    'tcp LISTEN 0 4096 127.0.0.1:3000 0.0.0.0:* users:(("bun",pid=1234,fd=20))',
+    'udp UNCONN 0 0 127.0.0.1:44435 0.0.0.0:* users:(("adb",pid=3190150,fd=14))',
+    'tcp LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:*',
+  ].join('\n');
+  test('finds the port, the process and the pid', () => {
+    const p = parseListeningPorts(SS);
+    expect(p.map((x) => x.port)).toEqual([3000, 44435]);
+    expect(p[0].proc).toBe('bun');
+    expect(p[0].pid).toBe(1234);
+  });
+  test('does not skip the first line, ss -H prints no header', () => {
+    expect(parseListeningPorts(SS)[0].port).toBe(3000);
+  });
+  test('a socket with no owning process is skipped, not guessed at', () => {
+    expect(parseListeningPorts(SS).some((x) => x.port === 53)).toBe(false);
+  });
+  test('empty input is empty output', () => {
+    expect(parseListeningPorts('')).toEqual([]);
+  });
+});
+
+describe('open target resolution', () => {
+  test('a URL is recognised without touching the filesystem', () => {
+    expect(resolveOpen('https://example.com').kind).toBe('url');
+  });
+  test('a missing path is reported rather than launched', () => {
+    expect(resolveOpen('/definitely/not/here').kind).toBe('missing');
+  });
+  test('a real directory is a dir', () => {
+    expect(resolveOpen('/tmp').kind).toBe('dir');
+  });
+});
+
+describe('round-four renderers honour the width invariant', () => {
+  const renderers: Record<string, (w: number) => string[]> = {
+    renderDeps: (w) => renderDeps([{ name: 'left-pad', version: '^1.3.0', wanted: '^1.3.0', current: '1.2.0', state: 'behind' }], w),
+    renderDepsEmpty: (w) => renderDeps([], w),
+    renderDepsAllOk: (w) => renderDeps([{ name: 'x', version: '^1.0.0', wanted: '^1.0.0', current: '1.0.1', state: 'ok' }], w),
+    renderChangelog: (w) => renderChangelog(groupCommits(['feat: a very long commit subject that will not fit', 'fix: b']), '1.2.3', w),
+    renderChangelogEmpty: (w) => renderChangelog([], '1.0.0', w),
+    renderOpen: (w) => renderOpen(resolveOpen('https://example.com/a/very/long/url/that/keeps/going/and/going'), w),
+    renderOpenMissing: (w) => renderOpen(resolveOpen('/definitely/not/here/at/all'), w),
+    describePermissions: (w) => describePermissions('auto-read', w),
+    renderPorts: (w) => renderPorts([{ port: 65535, proc: 'a-very-long-process-name', pid: 123456 }], w),
+    renderPortsEmpty: (w) => renderPorts([], w),
+    renderThemes: (w) => renderThemes('butter', w),
+    renderTables: (w) => renderTables([{ name: 'a_very_long_table_name', rows: 10, bytes: 1048576 }], '/tmp/x.db', w),
+    renderTablesEmpty: (w) => renderTables([], '/tmp/x.db', w),
+    renderEnvKeys: (w) => renderEnvKeys([{ name: 'A_VERY_LONG_SECRET_VARIABLE_NAME', set: true, looksSecret: true, length: 40 }], w),
+    renderEnvKeysEmpty: (w) => renderEnvKeys([], w),
+    renderCrons: (w) => renderCrons([{ schedule: '*/5 * * * *', command: 'npm test', valid: true, reason: '' }], w),
+    renderCronsInvalid: (w) => renderCrons([{ schedule: '99 * * * *', command: 'x', valid: false, reason: 'minute field "99" is not a valid cron field' }], w),
+    renderCronsEmpty: (w) => renderCrons([], w),
+    renderChurn: (w) => renderChurn([{ line: 42, times: 19, text: 'const x = doTheThing(withArguments);' }], 'src/index.ts', w),
+    renderChurnEmpty: (w) => renderChurn([], 'src/index.ts', w),
+  };
+  for (const [name, render] of Object.entries(renderers)) {
+    for (const width of WIDTHS) {
+      test(`${name} fits ${width} columns`, () => {
+        for (const line of render(width)) expect(stringWidth(stripAnsi(line))).toBeLessThanOrEqual(width);
+      });
+    }
+  }
+});
+
+describe('round-four contract', () => {
+  test('every registered command has a dispatcher case', async () => {
+    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+    const repl = fs.readFileSync(path.join(REPO, 'src/repl.ts'), 'utf8');
+    const missing = SLASH_COMMANDS.filter((c) => !repl.includes(`case '${c.command}'`));
+    expect(missing.map((c) => c.command)).toEqual([]);
+  });
+
+  test('every symbol repl.ts imports from features2 actually exists', async () => {
+    // /bisect shipped as `renderBisect is not defined` because it was
+    // dispatched but never imported. Read the import block, then resolve each
+    // name against the real module -- the audit that catches the whole class.
+    const f2 = (await import('../src/features2.ts')) as Record<string, unknown>;
+    const src = fs.readFileSync(path.join(REPO, 'src/repl.ts'), 'utf8');
+    const block = src.match(/from '\.\/features2\.ts'/)?.index;
+    expect(block).toBeGreaterThan(0);
+    const start = src.lastIndexOf('import {', block);
+    const names = src.slice(start, block).match(/^\s+([a-zA-Z][a-zA-Z0-9_]*),/gm) ?? [];
+    const missing = names
+      .map((l) => l.trim().replace(',', ''))
+      .filter((n) => n !== 'type' && !(n in f2));
+    expect(missing).toEqual([]);
+  });
+
+  test('every new command is documented in the README', async () => {
+    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+    const md = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8');
+    const NEW = ['/deps', '/changelog', '/open', '/permissions', '/ports', '/theme', '/tables', '/envkeys', '/when', '/churn'];
+    const undocumented = SLASH_COMMANDS.filter(
+      (c) => NEW.includes(c.command) && !new RegExp(`\`${c.command}[ \`]`).test(md),
+    );
     expect(undocumented.map((c) => c.command)).toEqual([]);
   });
 });
