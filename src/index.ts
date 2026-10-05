@@ -1,4 +1,5 @@
 import { startRepl } from './repl.ts';
+import { BEURRE_VERSION } from './config.ts';
 import { BeurreAgent } from './agent.ts';
 import { BeurreLoopRunner } from './loop.ts';
 import { relay } from './relay.ts';
@@ -57,7 +58,7 @@ async function main(): Promise<void> {
     }
 
     if (arg === '-v' || arg === '--version') {
-      console.log('beurre v1.0.0');
+      console.log(`beurre v${BEURRE_VERSION}`);
       process.exit(0);
     }
 

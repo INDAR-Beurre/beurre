@@ -1,6 +1,6 @@
 import { stringWidth } from '../src/layout.ts';
 import { describe, expect, it } from 'bun:test';
-import { getPredictiveMatches, formatPredictiveHints, SLASH_COMMANDS } from '../src/predictive.ts';
+import { getPredictiveMatches, formatPredictiveHints, SLASH_COMMANDS, suggestCommand } from '../src/predictive.ts';
 
 describe('Predictive Slash Command Engine', () => {
   it('should match commands starting with /m', () => {
@@ -43,5 +43,40 @@ describe('Predictive Slash Command Engine', () => {
       expect(formatted).toContain('/menu');
       expect(formatted).toMatch(/\/menu\s+OMP-style interactive comman/);
     }
+  });
+});
+
+describe('suggestCommand', () => {
+  it('recovers the most likely typo, transpositions included', () => {
+    // Plain Levenshtein scores "/modles" 2 away from "/models", outside the
+    // match budget, so the app replied "Unknown command" to its own headline
+    // feature. Damerau counts the swap as one edit.
+    expect(suggestCommand('/modles')?.command).toBe('/models');
+    expect(suggestCommand('/moddels')?.command).toBe('/models');
+    expect(suggestCommand('/helpp')?.command).toBe('/help');
+    expect(suggestCommand('/menuu')?.command).toBe('/menu');
+    expect(suggestCommand('/churnn')?.command).toBe('/churn');
+  });
+
+  it('stays silent when nothing is close, rather than guessing', () => {
+    expect(suggestCommand('/xyzzy')).toBeNull();
+    expect(suggestCommand('/zzzzzzz')).toBeNull();
+  });
+
+  it('only ever suggests a command that actually exists', () => {
+    const known = new Set(SLASH_COMMANDS.map((c) => c.command));
+    for (const typo of ['/modles', '/helpp', '/difff', '/menuu', '/churnn', '/depes']) {
+      const guess = suggestCommand(typo);
+      if (guess) expect(known.has(guess.command)).toBe(true);
+    }
+  });
+
+  it('ignores input that is not a command', () => {
+    expect(suggestCommand('please refactor the parser')).toBeNull();
+    expect(suggestCommand('')).toBeNull();
+  });
+
+  it('carries the description so the reply explains itself', () => {
+    expect(suggestCommand('/modles')?.description.length).toBeGreaterThan(0);
   });
 });

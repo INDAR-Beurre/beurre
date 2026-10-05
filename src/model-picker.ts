@@ -1,7 +1,7 @@
 import readline from 'node:readline';
 import { relay, type RelayModel, type RelayProvider, getModelDisplayName } from './relay.ts';
 import { b, colors, ButterSpinner, renderToast } from './theme.ts';
-import { padTo, stringWidth, truncate } from './layout.ts';
+import { box, padTo, stringWidth, truncate } from './layout.ts';
 
 export function filterModelList(models: RelayModel[], query: string): RelayModel[] {
   if (!query) return models;
@@ -31,27 +31,25 @@ export function renderModelList(
   currentModelId: string,
   opts: { scrollOffset?: number; pageSize?: number; liveProviders?: number; totalProviders?: number } = {},
 ): string[] {
-  const cols = Math.max(24, Math.min(width, 120));
+  // box() floors its own width at 20; clamping to 24 here instead made the
+  // picker 4 columns wider than the terminal it was asked to fit in, and
+  // every row wrapped mid-frame at 20-23 columns.
+  const cols = Math.max(20, Math.min(width, 120));
   const scrollOffset = Math.max(0, Math.min(opts.scrollOffset ?? 0, models.length));
   const pageSize = opts.pageSize ?? Math.max(3, Math.min(20, Math.floor(cols / 2)));
   const filtered = filterModelList(models, query);
   const selectedIdx = filtered.length === 0 ? 0 : Math.max(0, Math.min(selected, filtered.length - 1));
 
+  // Every other surface in the app is a `box()`: titled, bordered, with a
+  // footer of key hints. The picker floated free of all of it, so opening
+  // /models looked like a different program had taken over the screen.
   const lines: string[] = [
-    truncate(`${colors.bold}${colors.butterGold}beurre${colors.reset} ${colors.dim}select a model`, cols),
-    truncate(
-      `  ${colors.dim}current${colors.reset} ${colors.butterCream}${getModelDisplayName(currentModelId)}${colors.reset}` +
-        `${colors.dim}  ·  ${opts.liveProviders ?? 0} live of ${opts.totalProviders ?? 0} providers${colors.reset}`,
-      cols,
-    ),
+    `${colors.dim}current${colors.reset} ${colors.butterCream}${truncate(getModelDisplayName(currentModelId), cols - 22)}${colors.reset}` +
+      `${colors.dim}  ·  ${opts.liveProviders ?? 0} live of ${opts.totalProviders ?? 0} providers${colors.reset}`,
     '',
-    truncate(
-      `  ${colors.butterGold}search${colors.reset} ${
-        query ? `${colors.white}${truncate(query, cols - 10)}${colors.reset}` : `${colors.darkGray}type to filter…${colors.reset}`
-      }`,
-      cols,
-    ),
-    '',
+    `  ${colors.butterGold}search${colors.reset} ${
+      query ? `${colors.white}${truncate(query, cols - 12)}${colors.reset}` : `${colors.darkGray}type to filter…${colors.reset}`
+    }`,
   ];
 
   if (filtered.length === 0) {
@@ -106,8 +104,12 @@ export function renderModelList(
     }
   }
 
-  lines.push('', truncate(`  ${colors.dim}${filtered.length} of ${models.length} models · ↑↓ move · enter select · esc close${colors.reset}`, cols));
-  return lines;
+  return box({
+    title: 'select a model',
+    width: cols,
+    lines,
+    footer: `${colors.dim}${filtered.length} of ${models.length} models · ↑↓ move · enter select · esc close${colors.reset}`,
+  });
 }
 
 /**

@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getModelDisplayName } from './relay.ts';
 import { colorEnabled, termWidth, truncate, columns, stringWidth } from './layout.ts';
+import { BEURRE_VERSION } from './config.ts';
 
 // Escape codes collapse to '' when colour is off (NO_COLOR, TERM=dumb, pipes),
 // so every styled helper below keeps working unchanged — just without colour.
@@ -115,6 +116,35 @@ export function formatShortCwd(cwd: string): string {
 
 
 /**
+ * The Beurre mark: a slab of butter, sliced, with the corner melting away.
+ *
+ * Drawn with block glyphs rather than emoji so it inherits the terminal's own
+ * font and can never render as a full-colour emoji, and sized so the whole
+ * mark fits the two banner rows it shares with the wordmark. Three rows, not
+ * a six-line banner — the same restraint the wordmark follows. `LOGO_GUTTER` is
+ * measured from the widest row rather than hand-counted, which is what kept
+ * the bold row from overrunning the right margin.
+ */
+const BUTTER_MARK = [
+  '▟████▙',
+  '██████',
+  '▗▄▄▄▖',
+] as const;
+
+const MARK_TINT = [colors.butterPale, colors.butterGold, colors.butterMelt] as const;
+
+/** The mark alone, tinted. The caller owns the gutter. */
+export function logoMark(): string[] {
+  return BUTTER_MARK.map((row, i) => `${MARK_TINT[i]}${row}${colors.reset}`);
+}
+
+// The full gutter a marked row consumes: the one-space indent `row()` adds,
+// the widest mark row, and the two spaces between mark and content. Measuring
+// this is what keeps `rowWidth` honest — a value one column short pushed
+// every marked row a single column past the right margin.
+export const LOGO_GUTTER = 3 + Math.max(...BUTTER_MARK.map((r) => stringWidth(r)));
+
+/**
  * Startup banner.
  *
  * Design intent: no ASCII art, no emoji. A big company tool shows its name and
@@ -122,7 +152,7 @@ export function formatShortCwd(cwd: string): string {
  * eats a quarter of the viewport on every launch. Every line is fitted to the
  * real terminal width, so this is safe at 40 columns.
  */
-export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process.cwd(), effort = 'high'): string {
+export function banner(version = BEURRE_VERSION, model = 'glm-5-3-flash', cwd = process.cwd(), effort = 'high'): string {
   const width = Math.min(termWidth(), 100);
   const git = getGitStatus(cwd);
   const gitTag = git.branch ? `  ${git.branch}${git.isDirty ? '*' : ''}` : '';
@@ -133,12 +163,13 @@ export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process
   // `width - 34` guess truncated it mid-word ("glm-5…").
   const LABEL = 9;
   const room = Math.max(8, width - LABEL - 2);
-  const line = (left: string, right = '') => {
-    const l = ` ${left}`;
-    if (!right) return truncate(l, width);
-    const gap = ' '.repeat(Math.max(1, width - stringWidth(l) - stringWidth(right) - 1));
-    return truncate(l, width).slice(0, Math.max(0, width - stringWidth(right) - 1)) + gap + right;
-  };
+  // `line()` used to hand-roll this and computed its padding gap from `width`
+  // *before* slicing the already-truncated left, so at 84 columns the slice
+  // ate the separating space entirely and the header read
+  // "beurre v1.0.0model  GLM…". `columns()` is the shared layer for exactly
+  // this and gets it right; duplicating it is what broke.
+  const line = (left: string, right = '') =>
+    right ? columns(` ${left}`, right, width, 1) : truncate(` ${left}`, width);
 
   const wordmark = `${colors.bold}${colors.butterGold}beurre${colors.reset}`;
   const rule = `${colors.mutedBox}${'─'.repeat(Math.max(0, width - 1))}${colors.reset}`;
@@ -151,17 +182,45 @@ export function banner(version = '1.0.0', model = 'glm-5-3-flash', cwd = process
       ? 'Type a task and press Enter.  /menu settings  /help'
       : 'Type a task and press Enter.  /menu settings  /models switch  /help all commands';
 
+
+  // The mark is drawn in the gutter beside the first two content rows, so the
+  // banner keeps exactly the height it had before the logo existed. It only
+  // appears when the row can hold the mark, the wordmark and the full model
+  // name without truncating any of them: a mark that costs the user half
+  // their model id is chrome, not identity.
+  //
+  // The gutter is reserved BEFORE layout, not prepended afterwards. `line()`
+  // already pads its result out to the full width, so splicing 9 columns of
+  // mark in afterwards pushed every row 9 columns past the right margin.
+  const modelText = `model  ${modelField}`;
+  const showMark = width >= LOGO_GUTTER + 22 + modelText.length;
+  const mark = showMark ? logoMark() : null;
+  const rowWidth = width - (mark ? LOGO_GUTTER : 0);
+  // Every marked row uses the same gutter so the three rows of the mark share
+  // one left edge. `row()` prepends a single space, so the mark body starts at
+  // column 1 and the content column matches what the unmarked banner uses.
+  const row = (i: number, body: string) => (mark ? ` ${mark[i]}  ${body}` : body);
+
   const rows = [
     '',
     rule,
-    line(
-      `${wordmark} ${colors.dim}v${version}${colors.reset}`,
-      `${colors.dim}${truncate(`model  ${modelField}`, Math.max(4, room - 20))}${colors.reset}`,
-    ),
-    line(
-      `${colors.dim}${truncate(`${formatShortCwd(cwd)}${gitTag}`, room)}${colors.reset}`,
+    // The mark spans the three rows it can share with real content: the
+    // wordmark line, the cwd line, and the empty line under them. Spanning
+    // three rows instead of two is what lets the melted bottom actually be
+    // drawn instead of silently clipped away.
+    row(0, columns(
+      ` ${wordmark} ${colors.dim}v${version}${colors.reset}`,
+      `${colors.dim}${truncate(modelText, Math.max(4, room - 20))}${colors.reset}`,
+      rowWidth,
+      1,
+    )),
+    row(1, columns(
+      ` ${colors.dim}${truncate(`${formatShortCwd(cwd)}${gitTag}`, room)}${colors.reset}`,
       `${colors.dim}effort  ${effort}${colors.reset}`,
-    ),
+      rowWidth,
+      1,
+    )),
+    mark ? ` ${mark[2]}` : '',
     '',
     `${colors.dim} ${truncate(hints, width - 1)}${colors.reset}`,
     rule,

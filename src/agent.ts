@@ -1,6 +1,7 @@
 import { loadConfig } from './config.ts';
 import { relay, type ChatCompletionResult, type ChatMessage } from './relay.ts';
 import { BEURRE_TOOLS, executeTool, type ToolResult } from './tools.ts';
+import { runHook } from './features2.ts';
 import { b, colors } from './theme.ts';
 
 export interface AgentCallbacks {
@@ -307,6 +308,18 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
 
+          // Hooks ported from Claude Code. The pre-tool handler can veto the
+          // call by returning a deny decision; the post-tool handler sees the
+          // result. Placing both here means one guard covers every tool, the
+          // same way the permission check does.
+          const pre = runHook('pre-tool', tc.name, { tool_input: tc.arguments });
+          if (pre.denied) {
+            const reason = pre.reason || 'blocked by a pre-tool hook';
+            this.messages.push({ role: 'tool', tool_call_id: tc.id, content: `[hook blocked] ${reason}` });
+            callbacks.onToolEnd?.(tc.name, `[hook blocked] ${reason}`, true);
+            continue;
+          }
+
           callbacks.onToolStart?.(tc.name, tc.arguments);
 
           const toolRes = await executeTool(tc.id, tc.name, tc.arguments, {
@@ -329,6 +342,14 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
             ) {
               toolMessageContent += '\n\n[PROTOCOL REMINDER: You modified project code. You must also update AGENTS.md (under ## 📝 Changelog & Code Modifications) with the details of your changes before completing your task!]';
             }
+          }
+
+          const post = runHook('post-tool', tc.name, {
+            tool_input: tc.arguments,
+            is_error: toolRes.isError,
+          });
+          if (post.output.trim()) {
+            toolMessageContent += `\n\n[hook] ${post.output.trim()}`;
           }
 
           this.messages.push({

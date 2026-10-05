@@ -135,6 +135,7 @@ Within the interactive REPL (`beurre`):
 | `/envkeys [filter]` | Which environment variables are set, hiding secret values |
 | `/when add\|rm\|list` | Schedule work on a cron expression, validated before saving |
 | `/churn [file]` | Which lines of a file change most often |
+| `/hooks [rm <event> <n>]` | Shell commands fired at lifecycle points — a port of Claude Code's hooks |
 | **Sessions & cloud** | |
 | `/sessions` | List your cloud sessions |
 | `/resume <id>` | Resume a session from the cloud |
@@ -150,6 +151,70 @@ Within the interactive REPL (`beurre`):
 | `/loop <prompt>` | Start a continuous prompt repeating loop |
 | `/compact` | Melt & compact conversation history |
 | `/export <path>` | Export the transcript |
+
+---
+
+## 🪝 Hooks
+
+Ported from [Claude Code's hooks system](https://code.claude.com/docs/en/hooks). A hook is a shell
+command that runs automatically at a lifecycle point, receives the event as JSON on stdin, and can
+block the thing that triggered it.
+
+Claude Code ships 32 events; Beurre fires the five that are reachable from a command line. An event
+you cannot trigger is a specification, not a feature.
+
+| Event | Fires |
+|---|---|
+| `session-start` | Once, when the REPL starts |
+| `prompt-submit` | Before the model sees your turn |
+| `pre-tool` | Before each tool call — **can deny it** |
+| `post-tool` | After each tool call |
+| `turn-end` | After the model finishes responding |
+
+Configure them in `~/.beurre/hooks.json`, then list them with `/hooks`:
+
+```json
+{
+  "rules": {
+    "pre-tool": [
+      { "matcher": "bash", "command": "~/.beurre/hooks/block-rm.sh" }
+    ],
+    "turn-end": [
+      { "matcher": "*", "command": "notify-send 'beurre' 'turn finished'" }
+    ]
+  }
+}
+```
+
+`matcher` is a tool name, or `*` for every tool. Commands run through your shell, so `$(…)`, pipes
+and `&&` all work. The event JSON arrives on **stdin**, which a handler reads with `cat`:
+
+```json
+{
+  "rules": {
+    "pre-tool": [
+      {
+        "matcher": "bash",
+        "command": "CMD=$(cat); case \"$CMD\" in *rm\\ -rf*) echo '{\"permissionDecision\":\"deny\",\"reason\":\"destructive command blocked by hook\"}';; esac"
+      }
+    ]
+  }
+}
+```
+
+That handler blocks `bash` calls containing `rm -rf` and lets everything else through. Nothing is
+required but a POSIX shell — use `jq` if you want to parse the JSON properly.
+
+To *annotate* rather than block, print anything else; it is appended to the turn as context:
+
+```json
+{ "matcher": "*", "command": "cat | jq -r .prompt >> ~/notes/prompts.log" }
+```
+
+Any other stdout is appended to the turn as context, so a handler can annotate rather than block.
+A handler that exits non-zero is reported rather than swallowed — a guard script that crashes must
+not fail open.
+
 
 ---
 

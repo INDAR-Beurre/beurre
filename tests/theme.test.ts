@@ -11,9 +11,13 @@ import {
   formatSteeringPromptBar,
   BeurreWorkingBar,
   banner,
+  logoMark,
+  LOGO_GUTTER,
 } from '../src/theme.ts';
 import { BeurreAgent } from '../src/agent.ts';
 import { stripAnsi, stringWidth } from '../src/layout.ts';
+import { BEURRE_VERSION } from '../src/config.ts';
+import pkg from '../package.json';
 
 describe('Butter Theme & Status Rendering', () => {
 
@@ -422,5 +426,55 @@ describe('banner', () => {
     process.stdout.columns = prev;
     expect(out).not.toContain('glm-5-3-flash');
     expect(out).toContain('/menu');
+  });
+
+  it('reads the version from package.json rather than a literal', () => {
+    expect(BEURRE_VERSION).toBe(pkg.version);
+  });
+});
+
+describe('the Beurre mark', () => {
+  it('renders three tinted rows', () => {
+    const mark = logoMark();
+    expect(mark).toHaveLength(3);
+    // A slab of butter, sliced: solid block in the middle, a pale cut line on
+    // top, a melted taper underneath.
+    expect(stripAnsi(mark[0])).toBe('▟████▙');
+    expect(stripAnsi(mark[1])).toBe('██████');
+    expect(stripAnsi(mark[2])).toBe('▗▄▄▄▖');
+  });
+
+  it('leaves no row wider than the width it reserves', () => {
+    // LOGO_GUTTER must cover the indent, the widest mark row and the gutter
+    // between mark and content. When it was short by one, every marked row
+    // landed a single column past the right margin.
+    const widest = Math.max(...logoMark().map((r) => stringWidth(r)));
+    expect(LOGO_GUTTER).toBeGreaterThanOrEqual(widest + 3);
+    const prev = process.stdout.columns;
+    process.stdout.columns = 100;
+    for (const row of banner().split('\n')) {
+      expect(stringWidth(row)).toBeLessThanOrEqual(100);
+    }
+    process.stdout.columns = prev;
+  });
+
+  it('appears in the banner only when the row has room', () => {
+    const prev = process.stdout.columns;
+    process.stdout.columns = 40;
+    expect(banner()).not.toContain('▄');
+    process.stdout.columns = 100;
+    expect(banner()).toContain('▄');
+    process.stdout.columns = prev;
+  });
+
+  it('never overflows the terminal, at any width', () => {
+    const prev = process.stdout.columns;
+    for (let w = 20; w <= 160; w += 1) {
+      process.stdout.columns = w;
+      for (const row of banner().split('\n')) {
+        expect(stringWidth(row)).toBeLessThanOrEqual(w);
+      }
+    }
+    process.stdout.columns = prev;
   });
 });

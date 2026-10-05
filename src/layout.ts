@@ -202,10 +202,13 @@ export function box(opts: BoxOptions): string[] {
   const style = opts.border ?? 'rounded';
 
   if (style === 'none' || width < 34) {
+    // Callers supply their own indent (the picker and the /tables header both
+    // do), so prefixing another "  " pushed every row to width + 2 and the
+    // terminal wrapped mid-frame. Indent only what is not already indented.
     const out: string[] = [];
     if (opts.title) out.push(truncate(opts.title, width));
-    for (const l of opts.lines ?? []) out.push(truncate(`  ${l}`, width));
-    if (opts.footer) out.push(truncate(opts.footer, width));
+    for (const l of opts.lines ?? []) out.push(fit(l.startsWith(' ') ? l : `  ${l}`, width));
+    if (opts.footer) out.push(fit(opts.footer, width));
     return out;
   }
 

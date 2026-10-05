@@ -495,7 +495,10 @@ export function renderTestResult(code: number, tail: string, width: number): str
 }
 
 /** Width helper so callers do not each re-derive the terminal column. */
-export const contentWidth = (): number => Math.max(40, (process.stdout.columns || 80) - 2);
+// The 40 floor here meant any terminal narrower than 42 columns rendered 40-wide
+// boxes that wrapped mid-frame -- verified live at 30 cols, where every row of
+// /ports broke across two lines. box() already floors its own width at 20.
+export const contentWidth = (): number => Math.max(20, (process.stdout.columns || 80) - 2);
 
 export { stringWidth };
 

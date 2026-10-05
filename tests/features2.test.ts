@@ -1,8 +1,14 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { stripAnsi, stringWidth } from '../src/layout.ts';
+import { renderModelList } from '../src/model-picker.ts';
+import * as features2 from '../src/features2.ts';
+import { relay } from '../src/relay.ts';
+import { SLASH_COMMANDS } from '../src/predictive.ts';
+import { contentWidth } from '../src/features.ts';
+import { runHook, renderHooks, type HookConfig } from '../src/features2.ts';
 import {
   addTodo,
   analysePrompt,
@@ -433,30 +439,26 @@ describe('round-three renderers honour the width invariant', () => {
 });
 
 describe('every new renderer is reachable from the dispatcher', () => {
-  test('the relay methods the model picker calls actually exist', async () => {
+  test('the relay methods the model picker calls actually exist', () => {
     // /models rendered nothing at all for the life of the feature: the picker
     // called relay.listModels()/listProviders(), which do not exist, the
     // TypeError was swallowed by a catch, and the screen silently returned.
-    const { relay } = await import('../src/relay.ts');
     expect(typeof relay.fetchLiveModels).toBe('function');
     expect(typeof relay.fetchProviders).toBe('function');
   });
 
-  test('every registered command has a dispatcher case', async () => {
-    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+  test('every registered command has a dispatcher case', () => {
     const repl = fs.readFileSync(path.join(REPO, 'src/repl.ts'), 'utf8');
     const missing = SLASH_COMMANDS.filter((c) => !repl.includes(`case '${c.command}'`));
     expect(missing.map((c) => c.command)).toEqual([]);
   });
 
-  test('no command is registered twice', async () => {
-    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+  test('no command is registered twice', () => {
     const seen = SLASH_COMMANDS.map((c) => c.command);
     expect(new Set(seen).size).toBe(seen.length);
   });
 
-  test('every registered command is documented in the README', async () => {
-    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+  test('every registered command is documented in the README', () => {
     const md = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8');
     const undocumented = SLASH_COMMANDS.filter((c) => !new RegExp(`\`${c.command}[ \`]`).test(md));
     expect(undocumented.map((c) => c.command)).toEqual([]);
@@ -631,18 +633,17 @@ describe('round-four renderers honour the width invariant', () => {
 });
 
 describe('round-four contract', () => {
-  test('every registered command has a dispatcher case', async () => {
-    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+  test('every registered command has a dispatcher case', () => {
     const repl = fs.readFileSync(path.join(REPO, 'src/repl.ts'), 'utf8');
     const missing = SLASH_COMMANDS.filter((c) => !repl.includes(`case '${c.command}'`));
     expect(missing.map((c) => c.command)).toEqual([]);
   });
 
-  test('every symbol repl.ts imports from features2 actually exists', async () => {
+  test('every symbol repl.ts imports from features2 actually exists', () => {
     // /bisect shipped as `renderBisect is not defined` because it was
     // dispatched but never imported. Read the import block, then resolve each
     // name against the real module -- the audit that catches the whole class.
-    const f2 = (await import('../src/features2.ts')) as Record<string, unknown>;
+    const f2 = features2 as unknown as Record<string, unknown>;
     const src = fs.readFileSync(path.join(REPO, 'src/repl.ts'), 'utf8');
     const block = src.match(/from '\.\/features2\.ts'/)?.index;
     expect(block).toBeGreaterThan(0);
@@ -654,13 +655,188 @@ describe('round-four contract', () => {
     expect(missing).toEqual([]);
   });
 
-  test('every new command is documented in the README', async () => {
-    const { SLASH_COMMANDS } = await import('../src/predictive.ts');
+  test('every new command is documented in the README', () => {
     const md = fs.readFileSync(path.join(REPO, 'README.md'), 'utf8');
     const NEW = ['/deps', '/changelog', '/open', '/permissions', '/ports', '/theme', '/tables', '/envkeys', '/when', '/churn'];
     const undocumented = SLASH_COMMANDS.filter(
       (c) => NEW.includes(c.command) && !new RegExp(`\`${c.command}[ \`]`).test(md),
     );
     expect(undocumented.map((c) => c.command)).toEqual([]);
+  });
+});
+
+describe('every surface shares one frame', () => {
+  // Individually, each renderer already satisfies the width invariant. The
+  // defect this catches is *between* them: a surface that renders 78 columns
+  // while its neighbours render 80 makes the overlay erase by the wrong line
+  // count and the whole screen drifts.
+  const surfaces: Record<string, (w: number) => string[]> = {
+    renderDeps: (w) => renderDeps([{ name: 'left-pad', version: '^1.3.0', wanted: '^1.3.0', current: '1.2.0', state: 'behind' }], w),
+    renderPorts: (w) => renderPorts([{ port: 3000, proc: 'bun', pid: 1234 }], w),
+    renderThemes: (w) => renderThemes('butter', w),
+    renderChurn: (w) => renderChurn([{ line: 42, times: 19, text: 'const x = 1' }], 'src/index.ts', w),
+    renderCrons: (w) => renderCrons([{ schedule: '*/5 * * * *', command: 'npm test', valid: true, reason: '' }], w),
+    renderTables: (w) => renderTables([{ name: 'users', rows: 10, bytes: 1048576 }], '/tmp/x.db', w),
+    renderEnvKeys: (w) => renderEnvKeys([{ name: 'API_KEY', set: true, looksSecret: true, length: 40 }], w),
+    renderChangelog: (w) => renderChangelog(groupCommits(['feat: a very long subject that will not fit at all']), '1.2.3', w),
+    renderOpen: (w) => renderOpen(resolveOpen('https://example.com/very/long/url/that/keeps/going'), w),
+    describePermissions: (w) => describePermissions('ask', w),
+  };
+
+  for (const width of [46, 62, 80, 120]) {
+    test(`all surfaces render exactly ${width} columns at width ${width}`, () => {
+      for (const [name, render] of Object.entries(surfaces)) {
+        const widths = new Set(render(width).map((l) => stringWidth(stripAnsi(l))));
+        expect(`${name}=${[...widths].join('/')}`).toBe(`${name}=${width}`);
+      }
+    });
+  }
+
+  test('the model picker is framed like the rest, not floating free', () => {
+    const lines = renderModelList([{ id: 'glm-5-3-flash', name: 'GLM 5.3 Flash' }], 0, '', 80, 'glm-5-3-flash').map(stripAnsi);
+    expect(lines[0]).toMatch(/^╭─ select a model ─/);
+    expect(new Set(lines.map((l) => stringWidth(l))).size).toBe(1);
+  });
+});
+
+describe('renderPorts keeps the pid readable', () => {
+  // The pid suffix was appended after the proc column was already sized to the
+  // full width, so the row overflowed and box() clipped it to "pid 366…".
+  // A pid you cannot read is a pid you cannot kill.
+  const ports = [
+    { port: 3000, proc: 'bun', pid: 1234 },
+    { port: 443, proc: 'a-very-long-process-name-here', pid: 987654 },
+    { port: 8080, proc: 'chrome', pid: 5 },
+  ];
+
+  for (const width of [34, 40, 46, 62, 80, 120]) {
+    test(`prints every pid in full at ${width} columns`, () => {
+      const lines = renderPorts(ports, width).map(stripAnsi);
+      for (const p of ports) {
+        expect(lines.some((l) => l.includes(`pid ${p.pid}`))).toBe(true);
+      }
+      expect(lines.some((l) => /pid\s+\d*…/.test(l))).toBe(false);
+    });
+  }
+});
+
+describe('contentWidth never exceeds the terminal', () => {
+  // The 40 floor made every box wider than a narrow terminal, so at 30 columns
+  // each row of /ports wrapped onto two lines. Verified live in a 30-col pty.
+  for (const cols of [20, 26, 30, 40, 60, 80, 120]) {
+    test(`stays within ${cols} columns`, () => {
+      const prev = process.stdout.columns;
+      process.stdout.columns = cols;
+      const w = contentWidth();
+      process.stdout.columns = prev;
+      expect(w).toBeLessThanOrEqual(cols);
+      expect(w).toBeGreaterThanOrEqual(20);
+    });
+  }
+});
+
+describe('hooks', () => {
+  // hooks.json is real user configuration, so every test that writes it backs
+  // the file up first and restores it after -- a test that silently replaced
+  // someone's guard script would be worse than no test.
+  const HOOKS = path.join(os.homedir(), '.beurre', 'hooks.json');
+  let backup: string | null = null;
+
+  beforeEach(() => {
+    backup = fs.existsSync(HOOKS) ? fs.readFileSync(HOOKS, 'utf-8') : null;
+  });
+  afterEach(() => {
+    if (backup === null) {
+      if (fs.existsSync(HOOKS)) fs.rmSync(HOOKS);
+    } else {
+      fs.writeFileSync(HOOKS, backup, 'utf-8');
+    }
+  });
+
+  const write = (rules: Record<string, unknown>) => {
+    fs.mkdirSync(path.dirname(HOOKS), { recursive: true });
+    fs.writeFileSync(HOOKS, JSON.stringify({ rules }), 'utf-8');
+  };
+
+  test('runs a handler and returns its plain output', () => {
+    write({ 'turn-end': [{ matcher: '*', command: 'echo hello-from-hook' }] });
+    const r = runHook('turn-end', 'turn', {});
+    expect(r.output).toContain('hello-from-hook');
+    expect(r.denied).toBe(false);
+  });
+
+  test('lets a pre-tool handler deny the call', () => {
+    write({
+      'pre-tool': [
+        {
+          matcher: 'bash',
+          command: `echo '{"permissionDecision":"deny","reason":"no rm -rf"}'`,
+        },
+      ],
+    });
+    const r = runHook('pre-tool', 'bash', { tool_input: { command: 'rm -rf /' } });
+    expect(r.denied).toBe(true);
+    expect(r.reason).toBe('no rm -rf');
+  });
+
+  test('does not fire a handler whose matcher names a different tool', () => {
+    write({ 'pre-tool': [{ matcher: 'write', command: 'echo nope' }] });
+    const r = runHook('pre-tool', 'bash', { tool_input: { command: 'ls' } });
+    expect(r.output).not.toContain('nope');
+    expect(r.denied).toBe(false);
+  });
+
+  test('reports a failing handler instead of swallowing it', () => {
+    // A guard script that crashes must be visible: silently skipping it is how
+    // you lose a guard.
+    write({ 'pre-tool': [{ matcher: '*', command: 'exit 3' }] });
+    const r = runHook('pre-tool', 'bash', {});
+    expect(r.output).toContain('exit 3');
+  });
+
+  test('ignores rules with no command rather than throwing', () => {
+    write({ 'turn-end': [{ matcher: '*' }, { matcher: '*', command: '   ' }, { matcher: '*', command: 'echo ok' }] });
+    const r = runHook('turn-end', 'turn', {});
+    expect(r.output).toContain('ok');
+  });
+
+  test('treats plain-text output as a message, not a failed command', () => {
+    // Regression: `JSON.parse('repo: butter')` threw into the command catch, so
+    // an ordinary echo hook was reported as a crash. A hook that only wants to
+    // annotate is the common case, not an error.
+    write({ 'session-start': [{ matcher: '*', command: "echo 'repo: butter'" }] });
+    const r = runHook('session-start', 'session', {});
+    expect(r.output.trim()).toBe('repo: butter');
+    expect(r.output).not.toContain('JSON Parse error');
+  });
+
+  test('treats malformed hook JSON as output, not a crash', () => {
+    write({ 'turn-end': [{ matcher: '*', command: 'echo not-json' }] });
+    const r = runHook('turn-end', 'turn', {});
+    expect(r.denied).toBe(false);
+    expect(r.output).toContain('not-json');
+  });
+
+  test('returns nothing for an event with no rules', () => {
+    write({});
+    const r = runHook('session-start', 'session', {});
+    expect(r.denied).toBe(false);
+    expect(r.output).toBe('');
+  });
+
+  test('renders an empty state that tells you how to add one', () => {
+    const plain = stripAnsi(renderHooks({ rules: {} }, 80).join('\n'));
+    expect(plain).toContain('no hooks configured');
+    expect(plain).toContain('/hooks add');
+  });
+
+  test('lists configured hooks with their event and matcher', () => {
+    const cfg: HookConfig = {
+      rules: { 'pre-tool': [{ matcher: 'bash', command: 'echo guard' }] },
+    };
+    const plain = stripAnsi(renderHooks(cfg, 80).join('\n'));
+    expect(plain).toContain('pre-tool');
+    expect(plain).toContain('bash');
+    expect(plain).toContain('guard');
   });
 });

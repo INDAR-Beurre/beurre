@@ -2,6 +2,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+// Single source of truth for the version. The string was hardcoded in four
+// call sites and the -v flag made a fifth, so a version bump left the banner
+// and the CLI disagreeing. Read it once, from the only place it is written.
+function readPackageVersion(): string {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+    if (parsed && typeof parsed === 'object' && 'version' in parsed) {
+      const { version } = parsed;
+      if (typeof version === 'string') return version;
+    }
+  } catch {
+    // A missing or malformed package.json must not stop the CLI from starting.
+  }
+  return '0.0.0';
+}
+
+export const BEURRE_VERSION: string = readPackageVersion();
+
 export interface SubagentConfig {
   name: string;
   role: string;

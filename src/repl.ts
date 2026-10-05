@@ -6,13 +6,13 @@ import { BeurreAgent } from './agent.ts';
 import { relay, getModelDisplayName, type ChatMessage } from './relay.ts';
 import { listSubagents, runNamedSubagent } from './subagents.ts';
 import { compactMessages } from './compact.ts';
-import { loadConfig } from './config.ts';
+import { BEURRE_VERSION, loadConfig } from './config.ts';
 import { BeurreLoopRunner } from './loop.ts';
 import { showMenu } from './menu.ts';
 import { openModelPicker } from './model-picker.ts';
 import { BeurreEditor } from './editor.ts';
 import { renderMarkdownBlock, formatThinkingBlock, StreamingMarkdownHighlighter } from './markdown.ts';
-import { box, termWidth } from './layout.ts';
+import { box, termWidth, truncate } from './layout.ts';
 import {
   b,
   colors,
@@ -26,7 +26,7 @@ import {
   renderErrorCard,
   renderToast,
 } from './theme.ts';
-import { SLASH_COMMANDS, getPredictiveMatches, formatPredictiveHints } from './predictive.ts';
+import { SLASH_COMMANDS, getPredictiveMatches, formatPredictiveHints, suggestCommand } from './predictive.ts';
 import {
   fetchWhoami,
   fetchTokenUsage,
@@ -95,6 +95,12 @@ import {
   auditDependencies,
   explainIgnored,
   listListeningPorts,
+  HOOK_EVENTS,
+  loadHooks,
+  runHook,
+  renderHooks,
+  saveHooks,
+  type HookEvent,
   listStashes,
   loadCrons,
   describePermissions,
@@ -186,13 +192,18 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
   // Initial banner
   console.clear();
-  console.log(banner('1.0.0', agent.getModel(), agent.getCwd(), agent.getEffort()));
+  console.log(banner(BEURRE_VERSION, agent.getModel(), agent.getCwd(), agent.getEffort()));
 
   // First launch only: show the welcome panel once so a newcomer knows how to
   // start, then never again — repeat chrome is what makes a tool feel broken.
   if (isFirstRun()) {
     console.log(renderWelcome(contentWidth()).join('\n') + '\n');
     markOnboarded();
+  }
+
+  const sessionHook = runHook('session-start', 'session', { cwd: agent.getCwd() });
+  if (sessionHook.output.trim()) {
+    console.log(`${colors.dim}session hook:${colors.reset} ${sessionHook.output.trim()}\n`);
   }
 
   let totalTokensEstimate = 0;
@@ -289,7 +300,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
           lastReasoning = '';
           lastAssistantResponse = '';
           console.clear();
-          console.log(banner('1.0.0', agent.getModel(), agent.getCwd(), agent.getEffort()));
+          console.log(banner(BEURRE_VERSION, agent.getModel(), agent.getCwd(), agent.getEffort()));
           console.log(`\n${renderToast(`Started new session: ${newId} (bound to ${getModelDisplayName(agent.getModel())})`, true)}\n`);
           saveCloudSession({
             id: agent.getSessionId(),
@@ -1020,6 +1031,31 @@ export async function startRepl(initialModel?: string): Promise<void> {
           break;
         }
 
+        case '/hooks': {
+          // `/hooks` alone lists. `/hooks rm <event> <index>` removes.
+          // Adding is done by editing hooks.json directly -- an argument form
+          // that takes a whole shell command quoted through a TUI editor is
+          // where quoting bugs live, and `jq` is not guaranteed to exist.
+          const parts = rest.trim().split(/\s+/);
+          const cfg = loadHooks();
+          if (parts[0] === 'rm' && parts[1] && HOOK_EVENTS.includes(parts[1] as HookEvent)) {
+            const idx = Number.parseInt(parts[2] ?? '', 10);
+            const list = cfg.rules[parts[1]] ?? [];
+            if (Number.isNaN(idx) || idx < 0 || idx >= list.length) {
+              console.log(`\n${b.red('Nothing to remove:')} no hook ${parts[2] ?? '?'} on ${parts[1]}\n`);
+            } else {
+              list.splice(idx, 1);
+              if (list.length === 0) delete cfg.rules[parts[1]];
+              else cfg.rules[parts[1]] = list;
+              saveHooks(cfg);
+              console.log(`\n${b.green('Removed')} hook ${parts[1]}[${idx}]\n`);
+            }
+          } else {
+            console.log(`\n${renderHooks(cfg, contentWidth()).join('\n')}\n`);
+          }
+          break;
+        }
+
         case '/theme': {
           const want = rest.trim();
           const hit = THEMES.find((t) => t.id === want || t.label.toLowerCase() === want.toLowerCase());
@@ -1096,7 +1132,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
         case '/clear': {
           console.clear();
-          console.log(banner('1.0.0', agent.getModel(), agent.getCwd(), agent.getEffort()));
+          console.log(banner(BEURRE_VERSION, agent.getModel(), agent.getCwd(), agent.getEffort()));
           console.log(`\n  ${colors.dim}Screen buffer cleared. Active session preserved (${messages.length} messages in memory). Use /new to start a fresh session.${colors.reset}\n`);
           break;
         }
@@ -1115,7 +1151,24 @@ export async function startRepl(initialModel?: string): Promise<void> {
         }
 
         default: {
-          console.log(`\n${b.red('Unknown command:')} ${cmd}. Type ${b.gold('/menu')} or ${b.gold('/help')} for options.\n`);
+          const guess = suggestCommand(cmd);
+          // Printed as a bare sentence this wrapped mid-phrase below ~60
+          // columns and orphaned the "?" onto its own line. Every other
+          // message the user can trigger is a box, so this is one too.
+          const hint = guess
+            ? `Did you mean ${guess.command}?  ${guess.description}`
+            : `Type /menu or /help for options.`;
+          console.log(
+            box({
+              title: 'unknown command',
+              width: termWidth(),
+              lines: [
+                `${colors.butterCream}${truncate(cmd, termWidth() - 6)}${colors.reset}`,
+                '',
+                `  ${colors.dim}${hint}${colors.reset}`,
+              ],
+            }).join('\n') + '\n',
+          );
         }
       }
 
@@ -1126,6 +1179,18 @@ export async function startRepl(initialModel?: string): Promise<void> {
     if (runTurn) {
       trimmed = runTurn;
       runTurn = null;
+    }
+
+    // prompt-submit fires before the model sees the turn, so a handler can
+    // audit, annotate, or refuse it. Deny stops the turn before any tokens
+    // are spent.
+    const promptHook = runHook('prompt-submit', 'prompt', { prompt: trimmed });
+    if (promptHook.denied) {
+      console.log(`\n${b.red('Blocked by hook:')} ${promptHook.reason}\n`);
+      continue;
+    }
+    if (promptHook.output.trim()) {
+      trimmed += `\n\n[hook] ${promptHook.output.trim()}`;
     }
 
     // Normal Turn Execution with Streaming, Thinking Blocks, Diffs & Clean Error Recovery
@@ -1252,6 +1317,13 @@ export async function startRepl(initialModel?: string): Promise<void> {
       turns++;
       dailyTokensUsed += turnTokens;
       lastAssistantResponse = accumulatedResponse;
+
+      // turn-end is where Claude Code puts its Stop hook: notifications,
+      // test runners, commit messages. It runs after the response is final.
+      const turnHook = runHook('turn-end', 'turn', { turns, tokens: totalTokensEstimate });
+      if (turnHook.output.trim()) {
+        console.log(`${colors.dim}turn hook:${colors.reset} ${turnHook.output.trim()}\n`);
+      }
 
       // Auto-sync session turns to Supabase cloud store
       saveCloudSession({

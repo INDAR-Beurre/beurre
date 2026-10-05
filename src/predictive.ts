@@ -361,6 +361,11 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Diagnostics',
   },
   {
+    command: '/hooks',
+    description: 'Shell commands fired at lifecycle points, ported from Claude Code',
+    category: 'Automation',
+  },
+  {
     command: '/theme',
     argsHint: '[name]',
     description: 'Switch the colour theme',
@@ -417,6 +422,47 @@ export function getPredictiveMatches(input: string): SlashCommandInfo[] {
   }
   const token = trimmed.split(' ')[0].toLowerCase();
   return SLASH_COMMANDS.filter((sc) => sc.command.startsWith(token));
+}
+
+/**
+ * Closest command to a typo, or null when nothing is close enough.
+ * `/modles` should answer "/models", not send the user hunting in /menu.
+ * ponytail: Levenshtein over 70 short strings is free; no index needed.
+ */
+export function suggestCommand(input: string): SlashCommandInfo | null {
+  const token = input.trim().split(' ')[0].toLowerCase();
+  if (!token.startsWith('/')) return null;
+  let best: { cmd: SlashCommandInfo; dist: number } | null = null;
+  for (const sc of SLASH_COMMANDS) {
+    const d = editDistance(token, sc.command);
+    // One edit per ~4 characters, so a short typo still matches but an
+    // unrelated word never gets a confident-sounding suggestion.
+    if (d <= Math.max(1, Math.floor(sc.command.length / 4)) && (!best || d < best.dist)) {
+      best = { cmd: sc, dist: d };
+    }
+  }
+  return best?.cmd ?? null;
+}
+
+function editDistance(a: string, b: string): number {
+  // Damerau (adjacent transposition costs 1, not 2). Plain Levenshtein scores
+  // "/modles" 2 away from "/models", which fell outside the budget and dropped
+  // the single most likely typo in the app.
+  const m = a.length;
+  const n = b.length;
+  const d: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) d[i][0] = i;
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return d[m][n];
 }
 
 /**

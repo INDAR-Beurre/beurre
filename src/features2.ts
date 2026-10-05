@@ -1136,8 +1136,25 @@ export function renderPorts(ports: ListeningPort[], width: number): string[] {
   if (ports.length === 0) {
     return box({ title: 'ports', width, lines: [`  ${colors.dim}nothing listening${colors.reset}`] });
   }
-  const lines = ports.slice(0, 30).map(
-    (p) => `  ${colors.butterGold}${padTo(String(p.port), 6)}${colors.reset}${padTo(p.proc, Math.max(8, width - 20))}${colors.dim}pid ${p.pid}${colors.reset}`,
+  // box() renders each line at `width - 4` (border + space, both sides) and
+  // the row already carries a 2-space indent, so that is the real budget.
+  // Sizing the proc column against the full width overflowed and box() clipped
+  // the pid to "pid 366…" -- the one number you actually run `kill` with.
+  //
+  // Below ~40 columns there is no room for proc *and* a 7-digit pid, and the
+  // earlier `Math.max(8, …)` floor on the proc column pushed the row over
+  // instead. Below that point the pid is the thing that gives way.
+  const shown = ports.slice(0, 30);
+  const budget = width - 6;
+  const fullPid = Math.max(...shown.map((p) => stringWidth(`pid ${p.pid}`)));
+  // Give the pid its natural width whenever that leaves a usable proc column;
+  // only truncate it when the terminal genuinely cannot hold both.
+  const pidCol = fullPid + 6 <= budget ? fullPid : Math.max(4, Math.floor(budget / 3));
+  const procCol = Math.max(4, budget - 6 - pidCol);
+  const lines = shown.map(
+    (p) =>
+      `  ${colors.butterGold}${padTo(String(p.port), 6)}${colors.reset}` +
+      `${padTo(truncate(p.proc, procCol), procCol)}${colors.dim}${padTo(truncate(`pid ${p.pid}`, pidCol), pidCol)}${colors.reset}`,
   );
   return box({ title: `listening (${ports.length})`, width, lines });
 }
@@ -1455,4 +1472,149 @@ export function openInShell(t: OpenTarget): void {
 export function readPackageVersion(dir: string): string {
   const pkg = readJson<{ version?: string }>(path.join(dir, 'package.json'), {});
   return pkg.version ?? '0.0.0';
+}
+
+// ------------------------------------------------------------ /hooks ----
+
+/**
+ * Lifecycle hooks, ported from Claude Code's hooks system.
+ *
+ * Claude Code fires shell commands at named points in its lifecycle; the
+ * handler reads JSON on stdin and may return a decision. The full product
+ * ships 32 events, but almost every real use is one of five, and an event you
+ * cannot fire from a command line is a specification, not a feature. So: the
+ * events Beurre can actually reach, a matcher, and a deny decision.
+ */
+export const HOOK_EVENTS = [
+  'session-start',
+  'prompt-submit',
+  'pre-tool',
+  'post-tool',
+  'turn-end',
+] as const;
+
+export type HookEvent = (typeof HOOK_EVENTS)[number];
+
+export interface HookRule {
+  /** Tool name to match for `pre-tool`/`post-tool`; `*` matches every tool. */
+  matcher: string;
+  /** Shell command run on match. Receives the event JSON on stdin. */
+  command: string;
+}
+
+export interface HookConfig {
+  rules: Record<string, HookRule[]>;
+}
+
+const HOOKS_FILE = () => path.join(getBeurreDir(), 'hooks.json');
+
+export function loadHooks(): HookConfig {
+  // Asserted once at the file boundary, then trusted: a hand-edited hooks.json
+  // with a rule missing `command` has nothing to run and is skipped at use.
+  const raw = readJson<Partial<HookConfig>>(HOOKS_FILE(), { rules: {} });
+  const rules: Record<string, HookRule[]> = {};
+  for (const [event, list] of Object.entries(raw.rules ?? {})) {
+    if (!Array.isArray(list)) continue;
+    const kept = list.filter(
+      (r): r is HookRule => typeof r?.command === 'string' && r.command.trim() !== '',
+    );
+    if (kept.length) rules[event] = kept;
+  }
+  return { rules };
+}
+
+export function saveHooks(cfg: HookConfig): void {
+  fs.mkdirSync(getBeurreDir(), { recursive: true });
+  fs.writeFileSync(HOOKS_FILE(), JSON.stringify(cfg, null, 2), 'utf-8');
+}
+
+export interface HookResult {
+  /** True when a handler returned a `deny` decision for a pre-tool event. */
+  denied: boolean;
+  reason: string;
+  /** Every handler's non-JSON stdout, shown so failures are never silent. */
+  output: string;
+}
+
+/**
+ * Runs every hook matching `event`. A handler can block a tool call by
+ * printing `{"permissionDecision":"deny","reason":"…"}` on stdout.
+ *
+ * ponytail: 4s per handler, serial, blocking. Async hooks and HTTP handlers
+ * are a spec rabbit hole; add them when a real workflow needs them.
+ */
+export function runHook(event: HookEvent, toolName: string, payload: unknown): HookResult {
+  const result: HookResult = { denied: false, reason: '', output: '' };
+  for (const rule of loadHooks().rules[event] ?? []) {
+    if (rule.matcher !== '*' && rule.matcher !== toolName) continue;
+    const input = JSON.stringify({ event, tool_name: toolName, ...(payload as object) });
+    try {
+      const out = execSync(rule.command, { shell: true,
+        input,
+        encoding: 'utf-8',
+        timeout: 4000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const text = String(out).trim();
+      if (!text) continue;
+
+      // A hook either speaks JSON (to decide) or speaks plain text (to
+      // annotate). Only stdout that parses as a decision object is treated as
+      // a decision -- `JSON.parse` on "repo: butter" must not fall into the
+      // catch below and be reported as a crash.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        result.output += text + '\n';
+        continue;
+      }
+      const decision =
+        parsed !== null && typeof parsed === 'object' && 'permissionDecision' in parsed
+          ? (parsed as { permissionDecision?: unknown }).permissionDecision
+          : undefined;
+      if (decision === 'deny') {
+        const reason =
+          parsed !== null && typeof parsed === 'object' && 'reason' in parsed
+            ? (parsed as { reason?: unknown }).reason
+            : '';
+        result.denied = true;
+        result.reason = typeof reason === 'string' ? reason : 'blocked by hook';
+      } else {
+        result.output += text + '\n';
+      }
+    } catch (err) {
+      // A hook that throws is reported, never swallowed: silently skipping a
+      // guard script is how you lose a guard.
+      result.output += `${rule.command}: ${String((err as Error).message).split('\n')[0]}\n`;
+    }
+  }
+  return result;
+}
+
+export function renderHooks(cfg: HookConfig, width: number): string[] {
+  const events = HOOK_EVENTS.filter((e) => (cfg.rules[e]?.length ?? 0) > 0);
+  if (events.length === 0) {
+    return box({
+      title: 'hooks',
+      width,
+      lines: [
+        `  ${colors.dim}no hooks configured${colors.reset}`,
+        '',
+        `  ${colors.dim}add one with  /hooks add <event> <matcher> <command>${colors.reset}`,
+        `  ${colors.dim}e.g. /hooks add pre-tool Bash '!command -v jq >/dev/null'${colors.reset}`,
+      ],
+    });
+  }
+  const eventW = Math.min(14, Math.max(...events.map((e) => stringWidth(e))));
+  const lines = events.flatMap((event) =>
+    (cfg.rules[event] ?? []).map(
+      (rule) =>
+        `  ${colors.butterGold}${padTo(event, eventW)}${colors.reset}` +
+        `  ${colors.dim}${padTo(rule.matcher, 8)}${colors.reset}  ` +
+        `${colors.butterCream}${truncate(rule.command, Math.max(10, width - eventW - 16))}${colors.reset}`,
+    ),
+  );
+  const total = events.reduce((n, e) => n + (cfg.rules[e]?.length ?? 0), 0);
+  return box({ title: `hooks (${total})`, width, lines });
 }
