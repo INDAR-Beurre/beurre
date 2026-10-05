@@ -37,6 +37,16 @@ export interface CloudSession {
   }>;
 }
 
+// Wire shape of one entry from GET /sessions. The relay is the only producer,
+// so it is asserted once at this boundary rather than guarded field by field.
+interface RawSession {
+  id?: string;
+  title?: string;
+  at?: number;
+  model?: string;
+  history?: Array<{ model?: string; relay?: string }>;
+}
+
 const AUTH_DIR = path.join(os.homedir(), '.beurre');
 const AUTH_FILE = path.join(AUTH_DIR, 'auth.json');
 const RELAY_BASE = 'https://relay-gw.pages.dev';
@@ -87,8 +97,8 @@ export function saveStoredAuth(user: AuthUser): void {
       fs.mkdirSync(AUTH_DIR, { recursive: true });
     }
     fs.writeFileSync(AUTH_FILE, JSON.stringify(user, null, 2), 'utf-8');
-  } catch (err: any) {
-    console.error('Failed to save auth config:', err.message);
+  } catch (err: unknown) {
+    console.error('Failed to save auth config:', err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -122,7 +132,8 @@ export async function loginToRelay(username: string, password: string): Promise<
     const cookieMatch = /relay_session=([A-Za-z0-9_.-]+)/.exec(setCookie);
     const token = cookieMatch ? cookieMatch[1] : '';
 
-    const data = await res.json() as any;
+    // Relay is the sole producer; assert its documented shape once.
+    const data = (await res.json()) as { error?: string; user?: { name?: string; role?: string } };
     if (!res.ok || data.error) {
       return { ok: false, error: data.error || `HTTP ${res.status}` };
     }
@@ -137,8 +148,8 @@ export async function loginToRelay(username: string, password: string): Promise<
 
     saveStoredAuth(authUser);
     return { ok: true, user: authUser };
-  } catch (err: any) {
-    return { ok: false, error: err.message };
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -169,7 +180,9 @@ export async function fetchWhoami(): Promise<AuthUser> {
       signal: AbortSignal.timeout(5000),
     });
     if (res.ok) {
-      const data = await res.json() as any;
+      const data = (await res.json()) as {
+        user?: { name: string; role?: string; avatar?: string; createdAt?: string };
+      };
       if (data && data.user) {
         return {
           name: data.user.name,
@@ -215,7 +228,11 @@ export async function fetchTokenUsage(): Promise<TokenUsageInfo> {
     if (!res.ok) {
       return fallback;
     }
-    const data = await res.json() as any;
+    const data = (await res.json()) as {
+      dailyLimit?: number | null;
+      d1?: { t?: number };
+      account?: string;
+    };
     const isUnlimited = user.role === 'admin' || data.dailyLimit === null;
     const dailyUsed = Number(data.d1?.t || 0);
     const limit = isUnlimited ? null : DAILY_TOKEN_LIMIT;
@@ -258,7 +275,7 @@ export async function saveCloudSession(session: {
   id: string;
   title: string;
   model: string;
-  history: any[];
+  history: unknown[];
 }): Promise<boolean> {
   const cookieHeader = getAuthCookieHeader();
   if (!cookieHeader) return false;
@@ -299,8 +316,10 @@ export async function listCloudSessions(): Promise<CloudSession[]> {
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return [];
-    const data = await res.json() as any;
-    const sessionsList: any[] = Array.isArray(data.sessions) ? data.sessions : [];
+    // The relay is the sole producer of this payload, so the wire shape is
+    // asserted once here instead of guarding every field.
+    const data = (await res.json()) as { sessions?: RawSession[] };
+    const sessionsList = data.sessions ?? [];
 
     return sessionsList.map((s) => {
       let model = s.model || '';

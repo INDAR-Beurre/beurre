@@ -41,11 +41,18 @@ export interface ChatMessage {
   }>;
 }
 
+// Mirrors ToolDefinition's wire shape. Declared here rather than imported
+// because tools.ts already imports this module, and a back-import closes a cycle.
+export interface ToolSchema {
+  type: 'function';
+  function: { name: string; description?: string; parameters: Record<string, unknown> };
+}
+
 export interface ChatCompletionOptions {
   model?: string;
   effort?: string;
   messages: ChatMessage[];
-  tools?: any[];
+  tools?: ToolSchema[];
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
@@ -56,7 +63,7 @@ export interface ChatCompletionOptions {
 export interface ToolCallItem {
   id: string;
   name: string;
-  arguments: Record<string, any>;
+  arguments: Record<string, unknown>;
   rawArguments: string;
 }
 
@@ -303,7 +310,7 @@ export class RelayClient {
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         }
-        const data = (await res.json()) as any;
+        const data = (await res.json()) as RelayModel[] | { data?: RelayModel[] };
         const list: RelayModel[] = Array.isArray(data)
           ? data
           : Array.isArray(data.data)
@@ -315,7 +322,7 @@ export class RelayClient {
           this.cacheExpiry = now + this.CACHE_TTL_MS;
           return list;
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         lastError = err;
       }
     }
@@ -335,7 +342,7 @@ export class RelayClient {
           signal: AbortSignal.timeout(12000),
         });
         if (res.ok) {
-          const data = (await res.json()) as any;
+          const data = (await res.json()) as { providers?: unknown[] } | unknown[];
           if (Array.isArray(data.providers) && data.providers.length > 0) return data.providers;
           if (Array.isArray(data) && data.length > 0) return data;
         }
@@ -391,7 +398,8 @@ export class RelayClient {
         });
 
         if (res.ok) {
-          const data = (await res.json()) as any;
+          // OpenAI-shaped image response; asserted once at this boundary.
+          const data = (await res.json()) as { data?: Array<{ url?: string; b64_json?: string }> };
           const item = data.data?.[0];
           if (item) {
             return {
@@ -412,7 +420,7 @@ export class RelayClient {
   async syncSessionToWeb(sessionData: {
     id: string;
     title: string;
-    history: any[];
+    history: ChatMessage[];
   }): Promise<boolean> {
     const cookie = extractCookie(this.config.cookieFile);
     const headers: Record<string, string> = {
@@ -446,7 +454,7 @@ export class RelayClient {
   async streamChatCompletion(options: ChatCompletionOptions): Promise<ChatCompletionResult> {
     const model = options.model || this.config.defaultModel;
     const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl];
-    let lastError: any = null;
+    let lastError: unknown = null;
 
     for (const baseUrl of endpoints) {
       try {
@@ -499,7 +507,7 @@ export class RelayClient {
           delete fallbackPayload.tools;
           delete fallbackPayload.tool_choice;
           if (fallbackPayload.messages && Array.isArray(fallbackPayload.messages)) {
-            fallbackPayload.messages = fallbackPayload.messages.map((m: any) => {
+            fallbackPayload.messages = fallbackPayload.messages.map((m: ChatMessage) => {
               if (m.role === 'tool') {
                 return {
                   role: 'user',
@@ -660,7 +668,7 @@ export class RelayClient {
           model,
           finishReason,
         };
-      } catch (err: any) {
+      } catch (err: unknown) {
         lastError = err;
         if (options.signal?.aborted) {
           throw err;
