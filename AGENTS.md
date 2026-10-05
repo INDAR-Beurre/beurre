@@ -199,6 +199,11 @@ All tests must pass with **100% green status** (0 failures).
 - **The prompt redraws in one write.** The frame body and the cursor-positioning escape were two separate `stdout.write` calls, so the next keystroke's erase could land while the tail of the frame was still being emitted — the line being written survived the erase and stacked up the scrollback, which is the "same text shows up multiple times" report. One write per frame makes the pty deliver it atomically.
 - **`/deps` is now the drift check, not the audit.** The f4 renderer reports violated version ranges (`dep ranges (N, M violated)`); the old `auditDependencies` box shared the name, which made the two indistinguishable in a transcript.
 
+### [2026-10-05] — Autocomplete Box Scales to Terminal Width
+- **Author/Agent:** Beurre Production Readiness Pass, round nine (843 tests)
+- **The command box now spans the full terminal width.** Its inner width was `cols - 4` while the prompt bars it sits under span `cols`, so the right border stopped two columns short of the bars above it. At narrow widths the description column collapsed and wrapped mid-word; the label column now caps at half the inner width and the description is truncated to the columns that actually remain.
+- **Verified at 30/50/70 columns** — borders line up with the prompt bars, descriptions truncate with `…` instead of wrapping, and every row stays inside the width contract (`stringWidth(line) <= cols`).
+
 ### [2026-10-05] — Width Contract, Seven New Commands, Test Isolation
 - **Author/Agent:** Beurre Production Readiness Pass, round seven (87 commands registered; 843 tests)
 - **Two renderer bugs found by fuzzing, not by using the app.** `renderDoctor` appended its summary line *outside* the box, so at 20 columns `/doctor` was the one overlay a column too wide; `renderOutline` returned a bare sentence when empty and rows when populated, so the screen drifted the moment the first declaration appeared. Both are now framed like their populated paths. `Math.max(...[])` is `-Infinity`, which fed NaN into the doctor's padding — guarded. `tests/width-contract.test.ts` now pins every renderer branch at nine widths and was proven red against both bugs.

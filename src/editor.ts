@@ -697,24 +697,33 @@ export class BeurreEditor {
             }
 
             const visibleMatches = state.autocompleteMatches.slice(scrollOffset, scrollOffset + maxDisplay);
+            // The box spans exactly the terminal width — the same
+            // `cols` the prompt bars above use — so its borders
+            // line up with them instead of stopping a column short.
             const inner = Math.max(12, cols - 2);
             const countTag = ` [${state.selectedAutocompleteIdx + 1}/${totalMatches}]`;
-            // The header used to hardcode its hint text and pad the fill with a
-            // count taken from the ANSI-bearing string, so it wrapped mid-word
-            // on any terminal under ~80 columns.
             const head = truncate(
               `${colors.mutedBox}╭─${colors.reset} ${colors.bold}Commands${colors.reset}${colors.dim}${countTag}${colors.reset}`,
               inner,
             );
-            drawnLines.push(`${head} ${colors.mutedBox}${'─'.repeat(Math.max(0, inner - stringWidth(head) - 1))}╮${colors.reset}`);
+            const headerRow = Math.max(0, inner - stringWidth(head) - 1);
+            drawnLines.push(`${head} ${colors.mutedBox}${'─'.repeat(headerRow)}╮${colors.reset}`);
             // Reserve a fixed label column so descriptions form a clean left
             // edge; `columns()` right-aligns its second half, which ragged
-            // every description at wide widths.
+            // every description at wide widths. The label takes at most
+            // half the inner width, and the row's own gaps (`  ❯ `,
+            // two spaces, plus the box's border and padding) eat six
+            // columns, so the description never wraps mid-word.
             const labelCol = Math.min(
               Math.max(12, ...visibleMatches.map((m) => stringWidth(m.command) + (m.argsHint ? m.argsHint.length + 1 : 0))),
-              Math.floor(inner * 0.5),
+              Math.floor((inner - 2) / 2),
             );
-            const descCol = inner - labelCol - 2;
+            // The description budget: the row is `  ❯ ` + label
+            // + two spaces + description, framed by the box border
+            // and a padding space on each side. Truncate to what
+            // actually remains so no row can overrun the right
+            // border at any width.
+            const descCol = Math.max(4, cols - 8 - labelCol);
             visibleMatches.forEach((m, idx) => {
               const actualIdx = scrollOffset + idx;
               const isSelected = actualIdx === state.selectedAutocompleteIdx;
@@ -731,7 +740,7 @@ export class BeurreEditor {
               const remaining = totalMatches - (scrollOffset + maxDisplay);
               drawnLines.push(formatBoxLine(truncate(`    ${colors.dim}▼ ${remaining} more below${colors.reset}`, inner), colors.mutedBox));
             }
-            drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(inner)}╯${colors.reset}`);
+            drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(Math.max(0, cols - 2))}╯${colors.reset}`);
           }
         }
 
