@@ -638,8 +638,12 @@ export class BeurreEditor {
           const promptPrefix = `${colors.butterGold}${colors.bold}>${colors.reset} `;
           const isBufferEmpty = state.buffer === '';
           if (isBufferEmpty) {
-            const hint = cols >= 56 ? 'Type a prompt or / for commands (Shift+Enter newline)' : 'Type a prompt or / for commands';
-            const placeholder = `${colors.darkGray}${truncate(hint, Math.max(4, cols - 3))}${colors.reset}`;
+            // Drop the parenthetical rather than truncating mid-word; the old
+            // `cols >= 56` switch hard-cut to a different sentence instead.
+            const avail = Math.max(4, cols - 3);
+            const full = 'Type a prompt or / for commands (Shift+Enter newline)';
+            const hint = stringWidth(full) <= avail ? full : 'Type a prompt or / for commands';
+            const placeholder = `${colors.darkGray}${truncate(hint, avail)}${colors.reset}`;
             drawnLines.push(`${promptPrefix}${placeholder}`);
           } else {
             const ghost = `${colors.dim}${ghostText}${colors.reset}`;
