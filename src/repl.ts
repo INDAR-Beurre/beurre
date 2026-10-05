@@ -66,6 +66,11 @@ import {
   renderWelcome,
 } from './features.ts';
 
+// Every catch in this file only ever reads `.message`. Narrowing once here
+// replaces nine `catch (err: unknown)` sites with a sound type.
+const errorMessage = (err: unknown): string =>
+  err instanceof Error ? errorMessage(err) : String(err);
+
 export function copyToClipboard(text: string): boolean {
   try {
     const base64 = Buffer.from(text, 'utf-8').toString('base64');
@@ -227,9 +232,9 @@ export async function startRepl(initialModel?: string): Promise<void> {
                 console.log(`    ${colors.dim}Resume: /resume ${s.id}${colors.reset}\n`);
               }
             }
-          } catch (err: any) {
+          } catch (err: unknown) {
             spinner.stop();
-            console.log(renderErrorCard('Cloud Sessions Error', err.message));
+            console.log(renderErrorCard('Cloud Sessions Error', errorMessage(err)));
           }
           break;
         }
@@ -252,10 +257,12 @@ export async function startRepl(initialModel?: string): Promise<void> {
               }
               const systemMsg = agent.getMessages().find((m) => m.role === 'system');
               const restoredHistory = sess.history && sess.history.length > 0 ? sess.history : [];
+              // CloudSession.history is structurally a ChatMessage[], so no cast
+              // is needed to filter it or hand it to setMessages.
               const finalMessages = systemMsg
-                ? [systemMsg, ...restoredHistory.filter((m: any) => m.role !== 'system')]
+                ? [systemMsg, ...restoredHistory.filter((m) => m.role !== 'system')]
                 : restoredHistory;
-              agent.setMessages(finalMessages as any);
+              agent.setMessages(finalMessages);
               // Seed the counter from resumed history so usage stays monotonic.
               // Only the transcript counts — the system prompt is re-sent every
               // turn and is not a per-session cost.
@@ -288,9 +295,9 @@ export async function startRepl(initialModel?: string): Promise<void> {
                 `${b.bold('Quota Bar:')}     ${formatTokenProgressBar(usage.dailyTokensUsed, usage.dailyLimit)}`,
               ],
             }).join('\n') + '\n');
-          } catch (err: any) {
+          } catch (err: unknown) {
             spinner.stop();
-            console.log(renderErrorCard('Account Error', err.message));
+            console.log(renderErrorCard('Account Error', errorMessage(err)));
           }
           break;
         }
@@ -315,9 +322,9 @@ export async function startRepl(initialModel?: string): Promise<void> {
                 `${b.bold('All-Time:')}      ${usage.allTimeTokensUsed.toLocaleString()} tokens`,
               ],
             }).join('\n') + '\n');
-          } catch (err: any) {
+          } catch (err: unknown) {
             spinner.stop();
-            console.log(renderErrorCard('Quota Error', err.message));
+            console.log(renderErrorCard('Quota Error', errorMessage(err)));
           }
           break;
         }
@@ -422,9 +429,9 @@ export async function startRepl(initialModel?: string): Promise<void> {
               console.log(`  ${status} ${b.bold(p.name.padEnd(20))} ${b.dim(`${p.models || 0} models`)}`);
             }
             console.log();
-          } catch (err: any) {
+          } catch (err: unknown) {
             spinner.stop();
-            console.log(renderErrorCard('Relay Providers Error', err.message));
+            console.log(renderErrorCard('Relay Providers Error', errorMessage(err)));
           }
           break;
         }
@@ -454,9 +461,9 @@ export async function startRepl(initialModel?: string): Promise<void> {
               console.log(`\n${b.subagentBadge(result.subagentName)} ${b.dim(`[Model: ${result.modelId} | Turns: ${result.turns}]`)}`);
               console.log(renderMarkdownBlock(result.summary));
               console.log();
-            } catch (err: any) {
+            } catch (err: unknown) {
               spinner.stop();
-              console.log(renderErrorCard('Subagent Execution Error', err.message));
+              console.log(renderErrorCard('Subagent Execution Error', errorMessage(err)));
             }
           }
           break;
@@ -549,8 +556,8 @@ export async function startRepl(initialModel?: string): Promise<void> {
               }).join('\n');
               console.log(highlighted + '\n');
             }
-          } catch (err: any) {
-            console.log(renderErrorCard('Git Diff Error', err.message));
+          } catch (err: unknown) {
+            console.log(renderErrorCard('Git Diff Error', errorMessage(err)));
           }
           break;
         }
@@ -577,8 +584,8 @@ export async function startRepl(initialModel?: string): Promise<void> {
           try {
             fs.writeFileSync(exportPath, mdLines.join('\n'), 'utf-8');
             console.log(`\n${renderToast(`Session exported successfully to: ${exportPath}`, true)}\n`);
-          } catch (err: any) {
-            console.log(renderErrorCard('Export Error', err.message));
+          } catch (err: unknown) {
+            console.log(renderErrorCard('Export Error', errorMessage(err)));
           }
           break;
         }
@@ -660,7 +667,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
             const nodes = files.flatMap((f) => outlineFile(f));
             console.log(`\n${renderOutline(nodes, contentWidth()).join('\n')}\n`);
           } catch (err: unknown) {
-            console.log(`\n${renderErrorCard('Outline failed', err instanceof Error ? err.message : String(err))}\n`);
+            console.log(`\n${renderErrorCard('Outline failed', err instanceof Error ? errorMessage(err) : String(err))}\n`);
           }
           break;
         }
@@ -916,10 +923,10 @@ export async function startRepl(initialModel?: string): Promise<void> {
       } else {
         workingBar.stop();
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       workingBar.stop();
       if (!activeAbortController.signal.aborted) {
-        console.log(renderErrorCard('Relay Gateway / Inference Error', err.message));
+        console.log(renderErrorCard('Relay Gateway / Inference Error', errorMessage(err)));
       } else {
         console.log(`\n${colors.butterMelt}Turn cancelled by user.${colors.reset}\n`);
       }

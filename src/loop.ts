@@ -128,7 +128,8 @@ export class BeurreLoopRunner {
             },
             this.abortController.signal
           );
-        } catch (err: any) {
+        } catch (caught: unknown) {
+          const err = caught as { message?: unknown }; // Preserve the existing message lookup, including non-Error throws.
           workingBar.stop();
           if (this.abortController.signal.aborted) break;
           console.error(`\n${b.red('Error in loop turn:')} ${err.message}`);

@@ -10,7 +10,7 @@ export interface ToolDefinition {
   function: {
     name: string;
     description: string;
-    parameters: Record<string, any>;
+    parameters: Record<string, unknown>;
   };
 }
 
@@ -346,7 +346,8 @@ export async function executeTool(
           isError: true,
         };
     }
-  } catch (err: any) {
+  } catch (caught: unknown) {
+    const err = caught as { message?: unknown }; // Preserve the existing message lookup, including non-Error throws.
     return {
       tool_call_id: toolCallId,
       name,

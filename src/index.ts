@@ -80,7 +80,8 @@ async function main(): Promise<void> {
           if (m.owned_by) tags.push(`by: ${m.owned_by}`);
           console.log(`  • ${b.bold(m.id.padEnd(28))} ${b.dim(tags.join(' | '))}`);
         }
-      } catch (err: any) {
+      } catch (caught: unknown) {
+        const err = caught as { message?: unknown }; // Preserve the existing message lookup, including non-Error throws.
         spinner.stop();
         console.error(`${b.red('Error:')} ${err.message}`);
       }
@@ -98,7 +99,8 @@ async function main(): Promise<void> {
           const status = p.live ? b.green('● LIVE') : b.red('○ DOWN');
           console.log(`  ${status} ${b.bold(p.name.padEnd(20))} ${b.dim(`${p.models || 0} models`)}`);
         }
-      } catch (err: any) {
+      } catch (caught: unknown) {
+        const err = caught as { message?: unknown }; // Preserve the existing message lookup, including non-Error throws.
         spinner.stop();
         console.error(`${b.red('Error:')} ${err.message}`);
       }
@@ -211,7 +213,8 @@ async function main(): Promise<void> {
           }
         },
       });
-    } catch (err: any) {
+    } catch (caught: unknown) {
+      const err = caught as { message?: unknown }; // Preserve the existing message lookup, including non-Error throws.
       spinner.stop();
       console.error(`\n${b.red('Error:')} ${err.message}`);
       process.exit(1);

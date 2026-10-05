@@ -1,5 +1,5 @@
 import { loadConfig } from './config.ts';
-import { relay, type ChatMessage } from './relay.ts';
+import { relay, type ChatCompletionResult, type ChatMessage } from './relay.ts';
 import { BEURRE_TOOLS, executeTool, type ToolResult } from './tools.ts';
 import { b, colors } from './theme.ts';
 
@@ -208,7 +208,7 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
         signal?.addEventListener('abort', onOuterAbort, { once: true });
 
         let assistantContent = '';
-        let result: any = null;
+        let result: ChatCompletionResult | null = null;
         let wasSteered = false;
 
         try {
@@ -226,7 +226,7 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
               callbacks.onReasoning?.(res);
             },
           });
-        } catch (err: any) {
+        } catch (err: unknown) {
           if (signal?.aborted) {
             throw err;
           }
@@ -293,7 +293,7 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
         this.messages.push({
           role: 'assistant',
           content: finalResponse,
-          tool_calls: result.toolCalls.map((tc: any) => ({
+          tool_calls: result.toolCalls.map((tc) => ({
             id: tc.id,
             type: 'function',
             function: {

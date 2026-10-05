@@ -257,18 +257,22 @@ export function formatPredictiveHints(matches: SlashCommandInfo[], width: number
     return `${colors.dim}  no commands match${colors.reset}`;
   }
 
-  const inner = Math.max(20, width - 4);
   const shown = matches.slice(0, 10);
-  const nameCol = Math.min(
-    26,
-    Math.max(...shown.map((m) => stringWidth(`${m.command}${m.argsHint ? ` ${m.argsHint}` : ''}`))) + 2,
-  );
+  const widest = Math.max(...shown.map((m) => stringWidth(`${m.command}${m.argsHint ? ` ${m.argsHint}` : ''}`)));
+  const descCol = Math.min(30, widest + 2);
+  // Two columns need room for both. Below that, stacking the description under
+  // its command is the only layout that stays readable instead of squeezing
+  // the description into a two-character gutter.
+  const stacked = width - 4 < descCol + 12;
 
   const lines = shown.map((m) => {
     const hint = m.argsHint ? ` ${colors.dim}${m.argsHint}${colors.reset}` : '';
-    const label = padTo(`${colors.bold}${colors.butterGold}${m.command}${colors.reset}${hint}`, nameCol);
-    return `${label}${colors.gray}${m.description}${colors.reset}`;
-  });
+    const label = `${colors.bold}${colors.butterGold}${m.command}${colors.reset}${hint}`;
+    if (stacked) {
+      return [label, `${' '.repeat(2)}${colors.gray}${m.description}${colors.reset}`];
+    }
+    return `${padTo(label, descCol)}${colors.gray}${m.description}${colors.reset}`;
+  }).flat();
 
   if (matches.length > shown.length) {
     lines.push(`${colors.dim}… ${matches.length - shown.length} more — type / to filter${colors.reset}`);

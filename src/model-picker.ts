@@ -129,7 +129,8 @@ export async function openModelPicker(
     const [m, p] = await Promise.all([relay.listModels(), relay.listProviders()]);
     models = m ?? [];
     providers = p ?? [];
-  } catch (err: any) {
+  } catch (caught: unknown) {
+    const err = caught as { message?: unknown } | null | undefined; // Preserve optional message access and the original thrown-value fallback.
     spinner.stop();
     renderToast(`Could not reach the Relay Gateway: ${err?.message ?? err}`, false);
     return currentModelId;
