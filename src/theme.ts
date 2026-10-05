@@ -10,6 +10,17 @@ import { colorEnabled, termWidth, truncate, columns } from './layout.ts';
 // ponytail: one gate here covers every consumer; no per-call-site checks.
 const c = (code: string) => (colorEnabled() ? code : '');
 
+/** Raw RGB per palette entry, independent of NO_COLOR — the palette definition itself. */
+export const PALETTE_RGB: Record<string, number[]> = {
+  butterGold: [250, 204, 21], butterCream: [254, 249, 195], butterMelt: [245, 158, 11],
+  butterCrust: [217, 119, 6], butterPale: [254, 240, 138],
+  white: [255, 255, 255], gray: [168, 162, 158], darkGray: [120, 113, 108],
+  green: [132, 204, 22], red: [239, 68, 68], cyan: [56, 189, 248], mutedBox: [87, 83, 78],
+  toolBash: [232, 48, 73], toolRead: [48, 171, 232], toolEdit: [134, 48, 232],
+  toolWrite: [16, 185, 129], toolSearch: [232, 48, 232], toolImage: [232, 48, 140],
+  toolSubagent: [48, 232, 171],
+};
+
 export const colors = {
   reset: c('\x1b[0m'),
   bold: c('\x1b[1m'),
@@ -33,14 +44,16 @@ export const colors = {
   cyan: c('\x1b[38;2;56;189;248m'),
   mutedBox: c('\x1b[38;2;87;83;78m'),
 
-  // Tool colours: distinct hues so each tool is identifiable at a glance
-  toolBash: c('\x1b[38;2;249;115;22m'),
-  toolRead: c('\x1b[38;2;56;189;248m'),
-  toolEdit: c('\x1b[38;2;16;185;129m'),
-  toolWrite: c('\x1b[38;2;20;184;166m'),
-  toolSearch: c('\x1b[38;2;168;85;247m'),
-  toolImage: c('\x1b[38;2;244;63;94m'),
-  toolSubagent: c('\x1b[38;2;245;158;11m'),
+  // Tool colours: each tool must be identifiable by hue alone. toolEdit and
+  // toolWrite were 37 units apart (indistinguishable); toolRead duplicated
+  // cyan and toolSubagent duplicated butterMelt exactly.
+  toolBash: c('\x1b[38;2;232;48;73m'),     // red
+  toolRead: c('\x1b[38;2;48;171;232m'),    // sky
+  toolEdit: c('\x1b[38;2;134;48;232m'),    // violet
+  toolWrite: c('\x1b[38;2;16;185;129m'),   // emerald
+  toolSearch: c('\x1b[38;2;232;48;232m'),  // magenta
+  toolImage: c('\x1b[38;2;232;48;140m'),   // pink
+  toolSubagent: c('\x1b[38;2;48;232;171m'),// mint
 
   // Backgrounds
   bgUser: c('\x1b[48;2;250;204;21m\x1b[30m\x1b[1m'),

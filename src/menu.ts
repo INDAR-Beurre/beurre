@@ -9,7 +9,7 @@ import { compactMessages } from './compact.ts';
 import { BeurreLoopRunner } from './loop.ts';
 import { openModelPicker } from './model-picker.ts';
 import { b, colors, renderToast } from './theme.ts';
-import { box, columns, fit, listWindow, stringWidth, termHeight, termWidth, truncate } from './layout.ts';
+import { box, columns, fit, listWindow, padTo, stringWidth, termHeight, termWidth, truncate } from './layout.ts';
 
 import { Overlay, isCharKey, readKey } from './overlay.ts';
 export type MenuCategory = 'model' | 'agents' | 'workspace';
@@ -397,6 +397,14 @@ export function renderPalette(
   // cheap, so measure rather than predict.
   const budget = Math.max(1, maxRows - head.length - tail.length);
 
+  // Labels sit in a fixed column; values follow. `columns()` right-aligns its
+  // second argument, so it floated the value to an arbitrary position and left
+  // "Model" flush against its own value with no separating space.
+  // Never let the width cap pull the column below the longest label: that is
+  // what put "Shortcuts & commands" flush against its own value.
+  const widest = Math.max(...filtered.map((i) => stringWidth(i.title)));
+  const nameCol = widest + 2;
+
   const buildBody = (visible: number): string[] => {
     const w = listWindow(filtered, visible, activeIndex);
     const out: string[] = [];
@@ -416,10 +424,11 @@ export function renderPalette(
       const value = active && agent && item.getValue
         ? `${colors.butterCream}${item.getValue(agent, thinkingMode)}${colors.reset}`
         : '';
-      const right = value
+      const label = padTo(`  ${pointer} ${name}`, nameCol);
+      const rest = value
         ? `${value}  ${colors.darkGray}${item.hint}${colors.reset}`
         : `${colors.darkGray}${item.hint}${colors.reset}`;
-      out.push(truncate(columns(`  ${pointer} ${name}`, right, width), width));
+      out.push(truncate(`${label}${rest}`, width));
     }
     return out;
   };

@@ -1,3 +1,4 @@
+import { stringWidth } from '../src/layout.ts';
 import { describe, expect, it } from 'bun:test';
 import { getPredictiveMatches, formatPredictiveHints, SLASH_COMMANDS } from '../src/predictive.ts';
 
@@ -29,11 +30,17 @@ describe('Predictive Slash Command Engine', () => {
     expect(matches.length).toBe(SLASH_COMMANDS.length);
   });
 
-  it('should format predictive hints with descriptions', () => {
+  it('should format predictive hints within the given width', () => {
+    // The old renderer repeated `inner - 26` dashes, so every row overflowed
+    // and wrapped. Assert the invariant, not the old title wording.
     const matches = getPredictiveMatches('/m');
-    const formatted = formatPredictiveHints(matches);
-    expect(formatted).toContain('/menu');
-    expect(formatted).toContain('Commands Palette');
-    expect(formatted.toLowerCase()).toContain('interactive command palette');
+    for (const width of [46, 62, 80, 120]) {
+      const formatted = formatPredictiveHints(matches, width);
+      for (const line of formatted.split('\n')) {
+        expect(stringWidth(line)).toBeLessThanOrEqual(width);
+      }
+      expect(formatted).toContain('/menu');
+      expect(formatted).toMatch(/\/menu\s+OMP-style interactive comman/);
+    }
   });
 });

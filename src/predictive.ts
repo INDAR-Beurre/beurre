@@ -1,5 +1,5 @@
 import { b, colors } from './theme.ts';
-import { columns, termWidth, truncate } from './layout.ts';
+import { box, padTo, stringWidth, termWidth } from './layout.ts';
 
 export interface SlashCommandInfo {
   command: string;
@@ -246,34 +246,33 @@ export function getPredictiveMatches(input: string): SlashCommandInfo[] {
 }
 
 /**
- * Renders the command palette. Previously a hardcoded 72-column box whose
- * `padEnd(28)` was applied to a string that already contained ANSI escapes, so
- * the padding counted escape bytes instead of visible columns and every row
- * misaligned and wrapped below ~62 columns.
+ * Renders the command palette. Previously a hand-built box whose top border
+ * repeated `inner - 26` dashes — a magic constant that only lined up for a
+ * 26-character title, so every row overflowed and wrapped. Now everything goes
+ * through `box()`, and descriptions sit in a fixed label column rather than
+ * `columns()` (which right-aligns its second argument and ragged every row).
  */
 export function formatPredictiveHints(matches: SlashCommandInfo[], width: number = termWidth()): string {
-  if (matches.length === 0) return '';
-  const inner = Math.max(12, width - 4);
-  const lines: string[] = [];
+  if (matches.length === 0) {
+    return `${colors.dim}  no commands match${colors.reset}`;
+  }
 
-  lines.push(
-    `  ${colors.butterMelt}╭──${colors.reset} ${colors.bold}${colors.butterGold}Commands Palette${colors.reset} ${colors.dim}(${matches.length} commands)${colors.reset} ${colors.butterMelt}${'─'.repeat(Math.max(0, inner - 26))}╮${colors.reset}`,
+  const inner = Math.max(20, width - 4);
+  const shown = matches.slice(0, 10);
+  const nameCol = Math.min(
+    26,
+    Math.max(...shown.map((m) => stringWidth(`${m.command}${m.argsHint ? ` ${m.argsHint}` : ''}`))) + 2,
   );
 
-  const shown = matches.slice(0, 10);
-  for (const m of shown) {
-    const name = `${colors.bold}${colors.butterGold}${m.command}${colors.reset}`;
-    const label = m.argsHint ? `${name} ${colors.dim}${m.argsHint}${colors.reset}` : name;
-    const row = columns(label, `${colors.gray}${m.description}${colors.reset}`, inner);
-    lines.push(`  ${colors.butterMelt}│${colors.reset} ${truncate(row, inner)} ${colors.butterMelt}│${colors.reset}`);
-  }
+  const lines = shown.map((m) => {
+    const hint = m.argsHint ? ` ${colors.dim}${m.argsHint}${colors.reset}` : '';
+    const label = padTo(`${colors.bold}${colors.butterGold}${m.command}${colors.reset}${hint}`, nameCol);
+    return `${label}${colors.gray}${m.description}${colors.reset}`;
+  });
 
   if (matches.length > shown.length) {
-    lines.push(
-      `  ${colors.butterMelt}│${colors.reset} ${truncate(`${colors.dim}… ${matches.length - shown.length} more (type to filter)`, inner)} ${colors.butterMelt}│${colors.reset}`,
-    );
+    lines.push(`${colors.dim}… ${matches.length - shown.length} more — type / to filter${colors.reset}`);
   }
 
-  lines.push(`  ${colors.butterMelt}╰${'─'.repeat(inner)}╯${colors.reset}`);
-  return lines.join('\n');
+  return box({ title: `Commands (${matches.length})`, lines, width }).join('\n');
 }

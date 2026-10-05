@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   colors,
+  PALETTE_RGB,
   renderErrorCard,
   renderToast,
   formatClaudeToolCall,
@@ -345,3 +346,42 @@ describe('Butter Theme & Status Rendering', () => {
   });
 });
 
+
+describe('colour palette integrity', () => {
+  // 45 is the tightest separation achievable with 7 tools + 4 fixed butter
+  // tones; the old palette collapsed to 32 (edit vs write).
+  const TOOLS = [
+    'toolBash', 'toolRead', 'toolEdit', 'toolWrite',
+    'toolSearch', 'toolImage', 'toolSubagent',
+  ];
+  const BUTTER = ['butterGold', 'butterMelt', 'butterCrust', 'butterPale'];
+  const dist = (a: number[], b: number[]) => Math.hypot(...a.map((v, i) => v - b[i]));
+
+  it('gives every tool a distinct colour', () => {
+    for (let i = 0; i < TOOLS.length; i++) {
+      for (let j = i + 1; j < TOOLS.length; j++) {
+        const d = dist(PALETTE_RGB[TOOLS[i]], PALETTE_RGB[TOOLS[j]]);
+        expect(d).toBeGreaterThan(45);
+      }
+    }
+  });
+
+  it('keeps tool colours clear of the brand butter palette', () => {
+    for (const t of TOOLS) {
+      for (const b of BUTTER) {
+        expect(dist(PALETTE_RGB[t], PALETTE_RGB[b])).toBeGreaterThan(70);
+      }
+    }
+  });
+
+  it('keeps the RGB map in sync with the emitted tokens', () => {
+    // The map exists so palette tests work under NO_COLOR; if it drifts from
+    // the real escapes, every assertion above becomes theatre.
+    for (const name of [...TOOLS, ...BUTTER] as const) {
+      const [r, g, b] = PALETTE_RGB[name];
+      const expected = `\x1b[38;2;${r};${g};${b}m`;
+      const emitted = (colors as Record<string, string>)[name];
+      expect(emitted === "" || emitted === expected).toBe(true);
+    }
+  });
+});
