@@ -177,6 +177,11 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Diagnostics',
   },
   {
+    command: '/price',
+    description: 'Estimated spend for the current session',
+    category: 'Diagnostics',
+  },
+  {
     command: '/env',
     description: 'Show the environment the model is told about',
     category: 'Diagnostics',

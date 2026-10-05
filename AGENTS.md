@@ -192,6 +192,19 @@ All tests must pass with **100% green status** (0 failures).
 
 > **AI AGENT INSTRUCTION:** Append all future changes to this section in reverse chronological order.
 
+### [2026-10-05] — Relay Authentication, Markdown Rendering & Total Type Safety
+- **Author/Agent:** Beurre Production Readiness Pass (playtest matrix: 25 commands x 5 widths x 30/40/46/62/80/120 cols)
+- **Critical Bugs Fixed at the Root Cause:**
+  1. **Every relay call returned HTTP 401 (`src/relay.ts`)** — `getAuthHeaders` sent the session cookie *or* the API key, never both, so a stale `cookies.txt` silently overrode a valid key and the request arrived with no credential at all. Both are now sent together.
+  2. **The resolved key belonged to a different gateway (`src/config.ts`)** — key lookup took the *first* `apiKey:` in `~/.omp/agent/models.yml` regardless of provider, which on this machine is `yjs`, a 51-char key for an unrelated relay. `relayKeyFromOmp` now splits the file into provider blocks and returns the key from the block serving the configured `relayUrl`.
+  3. **`stripAnsi` was silently wrong (`src/layout.ts`)** — the shared `ANSI_SEQ` regex was **sticky** (`/y`), so `replace` anchored to `lastIndex` and consumed only the leading *run* of escapes. Escapes interleaved with plain text (`const\e[39m \e[38;2;...mx`) survived, corrupting every width calculation in the codebase. Now `/g`; two regression tests cover escapes separated by text.
+  4. **Markdown markers rendered literally in every reply (`src/markdown.ts`)** — `StreamingMarkdownHighlighter` wrote non-code lines raw, so `**bold**`, `# Head` and `- bullet` kept their markers although `renderMarkdownBlock` handles them correctly. Non-code lines now route through `renderMarkdownBlock` in both `feed()` and `flush()`.
+  5. **`/price` did not exist (`src/repl.ts`)** — `estimateCost`/`renderCost` were implemented and exported but never dispatched, so `/price` answered "Unknown command". Wired into the switch and registered in `SLASH_COMMANDS` and the README.
+- **Type Safety:** `src/` is now **entirely free of `any`** (was 30+). `repl.ts`'s nine `catch (err: any)` sites share one `errorMessage(err: unknown)` narrowing helper; `/resume` dropped two redundant casts (`CloudSession.history` is structurally `ChatMessage[]`); `agent.ts` types `result` as `ChatCompletionResult | null`; `auth.ts` and `relay.ts` assert named wire shapes (`RawSession`, `RelayModel`, `ToolSchema`) once per fetch rather than guarding every field. A local `isRecord` guard was deliberately rejected — it proves an object, not the fields actually read. `ToolSchema` mirrors `ToolDefinition` because `tools.ts` already imports `relay.ts`, so a back-import would close a cycle.
+- **UX Fixes:** `/help` below ~42 columns squeezed descriptions into a two-character gutter; it now **stacks the description under its command** instead. Verified clean at 20/26/30/40/46/62/80/120 columns.
+- **Tests:** 187 pass / 0 fail across 17 files. Added 2 `stripAnsi` regressions and made the streaming-markdown test ANSI-aware (asserting against coloured output measures nothing).
+- **Playtest:** `matrix.sh` drives the real CLI in a sized pty and fails on any pane line exceeding the frame or any stderr.
+
 ### [2026-10-05] — Palette Alignment, Coherent Tool Colours & Command Syntax Fixes
 - **Author/Agent:** Beurre Production Readiness Pass (playtest matrix: 21 commands x 5 widths)
 - **Bugs Fixed at the Root Cause:**

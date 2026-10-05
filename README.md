@@ -76,6 +76,7 @@ Within the interactive REPL (`beurre`):
 |---|---|
 | **General** | |
 | `/thinking [mode]` | Show the last reasoning block, or set how thinking is displayed |
+| `/think [expand\|collapse\|hide\|show]` | Toggle collapsible thinking blocks, or inspect the full reasoning trace |
 | `/quit` | Exit Beurre |
 | `/help` | Display the full command cheat sheet |
 | `/menu` | Searchable command palette |
@@ -94,6 +95,7 @@ Within the interactive REPL (`beurre`):
 | `/doctor` | Check cwd, git, config, write access, width and colour |
 | `/history` | Alias for `/stats` |
 | `/stats` | Session stats: turns, tool calls, thinking, tokens, spend |
+| `/price` | Estimated spend for the current session |
 | `/env` | Show the environment the model is told about |
 | `/tools` | List the tools the model can call |
 | `/test` | Detect and run the project's test command |

@@ -55,6 +55,7 @@ import {
   renderOutline,
   renderSnippets,
   renderStats,
+  renderCost,
   renderToolCatalog,
   runDoctor,
   runTestCommand,
@@ -644,6 +645,12 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
         case '/doctor': {
           console.log('\n' + renderDoctor(runDoctor(agent.getCwd()), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/price': {
+          const used = computeStats(agent.getMessages()).estTokens;
+          console.log(`\n${renderCost(agent.getModel(), used, contentWidth())}\n`);
           break;
         }
 
