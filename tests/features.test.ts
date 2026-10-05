@@ -267,9 +267,21 @@ describe('features: /tools, /env, /snippet, /checkpoint', () => {
     expect(listCheckpoints().some((c) => c.id === 'beurre-test-cp')).toBe(true);
   });
 
-  it('shows actionable empty states instead of blank output', () => {
-    expect(stripAnsi(renderSnippets([], 80))).toContain('/snippet add');
-    expect(stripAnsi(renderCheckpoints([], 80))).toContain('no checkpoints');
+  it('shows actionable empty states, framed like the populated path', () => {
+    // The empty state used to return bare text while a populated list returned a
+    // frame, so the overlay changed height when the first item was added. Both
+    // branches must be framed at the same outer width.
+    for (const [empty, populated, action] of [
+      [renderSnippets([], 80), renderSnippets([{ name: 'a', text: 'b' }], 80), '/snippet add'],
+      [renderCheckpoints([], 80), renderCheckpoints([{ id: 'x', label: 'y', at: '2026-01-01T00:00:00Z' }], 80), '/checkpoint save'],
+    ] as const) {
+      const e = empty.split('\n');
+      const po = populated.split('\n');
+      expect(stringWidth(e[0])).toBe(stringWidth(po[0]));
+      expect(stringWidth(e[e.length - 1])).toBe(stringWidth(po[po.length - 1]));
+      expect(e[0]).toContain('╭');
+      expect(stripAnsi(empty)).toContain(action);
+    }
   });
 });
 describe('snippet and checkpoint storage', () => {

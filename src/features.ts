@@ -213,7 +213,9 @@ export function loadCheckpoint(id: string): Checkpoint | null {
 }
 
 export function renderCheckpoints(points: Checkpoint[], width: number): string {
-  if (points.length === 0) return `${colors.dim}  no checkpoints yet — save one with /checkpoint save <label>${colors.reset}`;
+  if (points.length === 0) {
+    return box({ title: 'checkpoints (0)', width, lines: [`${colors.dim}none yet — save one with /checkpoint save <label>${colors.reset}`] }).join('\n');
+  }
   const shown = points.slice(0, 20);
   return box({
     title: `checkpoints (${shown.length}${points.length > 20 ? ` of ${points.length}` : ''})`,
@@ -252,7 +254,10 @@ export function computeStats(messages: ChatMessage[]): SessionStats {
   return s;
 }
 
-export function renderStats(s: SessionStats, model: string, width: number): string {
+// Returns the frame lines, not a joined string: `box()` already produces one
+// entry per line, and declaring `string` here while returning `string[]` forced
+// every caller to append a `.join('\n')` to undo a type error.
+export function renderStats(s: SessionStats, model: string, width: number): string[] {
   const rows = [
     ['Turns', String(s.turns)],
     ['User messages', String(s.user)],
@@ -267,6 +272,37 @@ export function renderStats(s: SessionStats, model: string, width: number): stri
   const cost = estimateCost(model, s.estTokens);
   if (cost !== null) lines.push(`  ${colors.dim}${'Est. spend'.padEnd(label)}${colors.reset}  ${colors.butterGold}$${cost.toFixed(4)}${colors.reset}`);
   return box({ title: "session stats", lines, width });
+}
+
+// ------------------------------------------------------------ /history ----
+
+/** The conversation so far, newest last. `/history` used to be an alias for
+ * `/stats`, so the command named for your transcript printed counters instead. */
+export function renderHistory(messages: ChatMessage[], width: number, limit = 40): string[] {
+  const shown = messages.slice(-limit);
+  if (shown.length === 0) {
+    return box({
+      title: 'history (0)',
+      width,
+      lines: [`${colors.dim}no messages yet — ask something${colors.reset}`],
+    });
+  }
+  const label: Record<ChatMessage['role'], string> = {
+    system: 'sys',
+    user: 'you',
+    assistant: 'beurre',
+    tool: 'tool',
+  };
+  const gutter = Math.max(...Object.values(label).map((v) => v.length));
+  return box({
+    title: `history (${shown.length}${messages.length > limit ? ` of ${messages.length}` : ''})`,
+    width,
+    lines: shown.map((m) => {
+      const one = m.content.replace(/\s+/g, ' ').trim();
+      const body = truncate(one, Math.max(8, width - gutter - 6));
+      return truncate(`${colors.dim}${label[m.role].padEnd(gutter)}${colors.reset}  ${body}`, width - 6);
+    }),
+  });
 }
 
 // ------------------------------------------------------------- /tools ----
@@ -346,7 +382,7 @@ export function removeSnippet(name: string): boolean {
 
 export function renderSnippets(snippets: Snippet[], width: number): string {
   if (snippets.length === 0) {
-    return `${colors.dim}  no snippets yet — make one with ${b.gold('/snippet add <name> <text>')}${colors.reset}`;
+    return box({ title: 'snippets (0)', width, lines: [`${colors.dim}none yet — make one with ${b.gold('/snippet add <name> <text>')}${colors.reset}`] }).join('\n');
   }
   const label = Math.max(...snippets.map((s) => s.name.length));
   return box({
@@ -403,7 +439,9 @@ export function renderGrep(
   pattern: string,
   width: number,
 ): string {
-  if (results.length === 0) return `${colors.dim}  no match for “${pattern}”${colors.reset}`;
+  if (results.length === 0) {
+    return box({ title: `grep ${truncate(pattern, Math.max(4, width - 14))}`, width, lines: [`${colors.dim}no match${colors.reset}`] }).join('\n');
+  }
   const fileW = Math.max(...results.map((r) => r.file.length));
   return results
     .map((r) => truncate(`  ${colors.butterGold}${r.file.padEnd(fileW)}${colors.reset}${colors.dim}:${r.line}${colors.reset}  ${r.text}`, width))

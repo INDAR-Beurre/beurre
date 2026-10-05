@@ -123,7 +123,7 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
   },
   {
     command: '/history',
-    description: 'Display session message statistics and tokens',
+    description: 'Show the conversation so far',
     category: 'Session',
   },
   {

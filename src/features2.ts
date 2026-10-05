@@ -49,7 +49,7 @@ export function removeNote(tag: string): boolean {
 
 export function renderNotes(notes: Note[], width: number): string {
   if (notes.length === 0) {
-    return truncate(`${colors.dim}  no notes yet — make one with /notes add <tag> <text>${colors.reset}`, width);
+    return box({ title: 'notes (0)', width, lines: [`${colors.dim}none yet — make one with /notes add <tag> <text>${colors.reset}`] }).join('\n');
   }
   const tagW = Math.min(16, Math.max(...notes.map((n) => stringWidth(n.tag))));
   const lines = notes
@@ -107,7 +107,7 @@ export function clearDoneTodos(): number {
 
 export function renderTodos(todos: Todo[], width: number): string {
   if (todos.length === 0) {
-    return truncate(`${colors.dim}  nothing to do — add one with /todo add <text>${colors.reset}`, width);
+    return box({ title: 'todos (0)', width, lines: [`${colors.dim}nothing to do — add one with /todo add <text>${colors.reset}`] }).join('\n');
   }
   const lines = todos.map((t) => {
     const mark = t.done ? `${colors.green}✔${colors.reset}` : `${colors.dim}○${colors.reset}`;
@@ -220,7 +220,7 @@ export function expandAlias(input: string, aliases: Record<string, string>): str
 export function renderAliases(aliases: Record<string, string>, width: number): string {
   const entries = Object.entries(aliases);
   if (entries.length === 0) {
-    return truncate(`${colors.dim}  no aliases — make one with /alias <name> <expansion>${colors.reset}`, width);
+    return box({ title: 'aliases (0)', width, lines: [`${colors.dim}none yet — make one with /alias <name> <expansion>${colors.reset}`] }).join('\n');
   }
   const nameW = Math.max(...entries.map(([n]) => stringWidth(n)));
   const lines = entries.map(([n, v]) => `  ${colors.butterGold}${padTo(n, nameW)}${colors.reset}  ${colors.gray}${truncate(v, Math.max(10, width - nameW - 6))}${colors.reset}`);
@@ -363,7 +363,7 @@ export function inspectPath(target: string): WatchTarget {
 
 export function renderWatch(targets: WatchTarget[], width: number): string {
   if (targets.length === 0) {
-    return truncate(`${colors.dim}  nothing to watch — pass a path: /watch <path>${colors.reset}`, width);
+    return box({ title: 'watch', width, lines: [`${colors.dim}nothing to watch — pass a path: /watch <path>${colors.reset}`] }).join('\n');
   }
   const labelW = Math.min(24, Math.max(...targets.map((t) => stringWidth(path.basename(t.label)))));
   const lines = targets.map((t) => {
@@ -436,7 +436,7 @@ export function formatBytes(n: number): string {
 
 export function renderCache(entries: CacheEntry[], width: number): string {
   if (entries.length === 0) {
-    return truncate(`${colors.dim}  nothing cached — no build output in this project.${colors.reset}`, width);
+    return box({ title: 'cache', width, lines: [`${colors.dim}nothing cached — no build output in this project.${colors.reset}`] }).join('\n');
   }
   const total = entries.reduce((a, e) => a + e.bytes, 0);
   const labelW = Math.max(...entries.map((e) => e.label.length));

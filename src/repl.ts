@@ -55,6 +55,7 @@ import {
   grepWorkspace as grepWorkspaceSafe,
   renderOutline,
   renderSnippets,
+  renderHistory,
   renderStats,
   renderCost,
   renderToolCatalog,
@@ -720,7 +721,11 @@ export async function startRepl(initialModel?: string): Promise<void> {
           break;
         }
 
-        case '/history':
+        case '/history': {
+          console.log('\n' + renderHistory(agent.getMessages(), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
         case '/stats': {
           console.log('\n' + renderStats(computeStats(agent.getMessages()), agent.getModel(), contentWidth()).join('\n') + '\n');
           break;
