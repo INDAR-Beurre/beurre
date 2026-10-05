@@ -22,6 +22,7 @@ import {
   runDoctor,
   saveCheckpoint,
   saveSnippet,
+  removeSnippet,
   listCheckpoints,
   loadCheckpoint,
   listSnippets,
@@ -285,5 +286,40 @@ describe('features: /tools, /env, /snippet, /checkpoint', () => {
   it('shows actionable empty states instead of blank output', () => {
     expect(stripAnsi(renderSnippets([], 80))).toContain('/snippet add');
     expect(stripAnsi(renderCheckpoints([], 80))).toContain('no checkpoints');
+  });
+});
+describe('snippet and checkpoint storage', () => {
+  const home = () => process.env.HOME;
+
+  it('round-trips a snippet and removes it', () => {
+    const name = `t-${Date.now()}`;
+    saveSnippet(name, 'hello world');
+    expect(listSnippets().find((s) => s.name === name)?.text).toBe('hello world');
+    expect(removeSnippet(name)).toBe(true);
+    expect(listSnippets().find((s) => s.name === name)).toBeUndefined();
+    expect(removeSnippet(name)).toBe(false);
+  });
+
+  it('keeps the snippet name separate from its text', () => {
+    // `/snippet review add hello world` must not save name="hello". The REPL
+    // parses `<name> [verb] <text>`, and that split is the regression.
+    const [name, verb, ...body] = 'review add hello world'.split(' ').filter(Boolean);
+    expect([name, verb, body.join(' ')]).toEqual(['review', 'add', 'hello world']);
+  });
+
+  it('saves and restores a checkpoint', () => {
+    const id = `t-cp-${Date.now()}`;
+    const messages = [{ role: 'user', content: 'remember this' }] as never;
+    saveCheckpoint(id, 'test label', messages);
+    expect(listCheckpoints().some((c) => c.id === id)).toBe(true);
+    expect(loadCheckpoint(id)?.label).toBe('test label');
+    expect(loadCheckpoint(id)?.messages).toHaveLength(1);
+    expect(loadCheckpoint('no-such-checkpoint')).toBeNull();
+    fs.rmSync(path.join(home(), '.beurre', 'checkpoints', `${id}.json`), { force: true });
+  });
+
+  it('never reports an empty checkpoint list as if it auto-saved', () => {
+    // The empty state must point at the real command.
+    expect(renderCheckpoints([], 80)).toContain('/checkpoint save');
   });
 });

@@ -209,7 +209,7 @@ export function loadCheckpoint(id: string): Checkpoint | null {
 }
 
 export function renderCheckpoints(points: Checkpoint[], width: number): string {
-  if (points.length === 0) return `${colors.dim}  no checkpoints yet — one is saved each turn${colors.reset}`;
+  if (points.length === 0) return `${colors.dim}  no checkpoints yet — save one with /checkpoint save <label>${colors.reset}`;
   return points
     .slice(0, 20)
     .map((c) => {

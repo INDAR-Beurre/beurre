@@ -101,8 +101,8 @@ Within the interactive REPL (`beurre`):
 | `/grep <text>` | Literal search across the workspace |
 | **Workflow** | |
 | `/init` | Survey the repo and produce a grounded onboarding brief |
-| `/checkpoint [id]` | List checkpoints, or restore one by id |
-| `/snippet <name> add\|rm <text>` | Save and reuse prompts |
+| `/checkpoint [save <label> \| <id>]` | List checkpoints, save one, or restore by id |
+| `/snippet <name> [rm] <text>` | Save and reuse prompts |
 | **Sessions & cloud** | |
 | `/sessions` | List your cloud sessions |
 | `/resume <id>` | Resume a session from the cloud |

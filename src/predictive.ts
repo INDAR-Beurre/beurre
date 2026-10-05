@@ -212,13 +212,13 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
   },
   {
     command: '/checkpoint',
-    argsHint: '[id]',
-    description: 'List checkpoints, or restore one by id',
+    argsHint: '[save <label> | <id>]',
+    description: 'List checkpoints, save one, or restore by id',
     category: 'Workflow',
   },
   {
     command: '/snippet',
-    argsHint: '<name> add|rm <text>',
+    argsHint: '<name> [rm] <text>',
     description: 'Reusable saved prompts',
     category: 'Workflow',
   },

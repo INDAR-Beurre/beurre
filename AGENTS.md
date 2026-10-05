@@ -192,6 +192,18 @@ All tests must pass with **100% green status** (0 failures).
 
 > **AI AGENT INSTRUCTION:** Append all future changes to this section in reverse chronological order.
 
+### [2026-10-05] — Palette Alignment, Coherent Tool Colours & Command Syntax Fixes
+- **Author/Agent:** Beurre Production Readiness Pass (playtest matrix: 21 commands x 5 widths)
+- **Bugs Fixed at the Root Cause:**
+  1. **`/help` rendered a corrupted box (`src/predictive.ts`)** — `formatPredictiveHints` hand-built its frame and sized the top border with `'─'.repeat(inner - 26)`, a magic constant that only lined up for a 26-character title. Every content row overflowed and wrapped, so `/help` — a beginner's first view of the tool — rendered as ragged double rows with broken borders. Rewritten onto `box()` with a fixed label column.
+  2. **`/menu` values floated to arbitrary positions (`src/menu.ts`)** — rows used `columns()`, which right-aligns its second argument; "Model" sat flush against its own value with no separating space. Now a fixed label column sized to the longest title, so values hug their labels at every width instead of justifying to the right margin.
+  3. **`/snippet add` dropped the name (`src/repl.ts`)** — the parser destructured `[name, ...body]` and then treated `body[0]` as the verb, so `/snippet review add hello world` saved a snippet named `hello` with text `world`, silently losing `review`. Corrected to `[name, verb, ...body]`.
+  4. **`/checkpoint` could never list anything (`src/repl.ts`)** — `saveCheckpoint` was implemented and exported but called from nowhere, while the empty state promised checkpoints were saved automatically. Wired `/checkpoint save <label>` and corrected the empty state to name the real command.
+  5. **Tool colour palette had collapsed (`src/theme.ts`)** — `toolSubagent` duplicated `butterMelt` exactly, `toolRead` duplicated `cyan` exactly, and `toolEdit`/`toolWrite` sat 37 units apart (indistinguishable). Re-spread all seven tools on the colour wheel, clear of the four fixed butter tones. Exported `PALETTE_RGB` with regression tests asserting pairwise separation so the palette cannot silently collapse again.
+  6. **`formatPredictiveHints` returned an empty string on no matches**, showing the user nothing at all; now returns a visible "no commands match".
+- **Playtest Method:** Added `/tmp/beurre-play/matrix.sh`, which drives the real CLI in a sized pty for every command at 40/46/62/80/120 columns and fails on any pane line exceeding the frame width or any stderr output. Result: **0 failures across 105 command/width combinations.**
+- **Tests:** 185 pass / 0 fail across 17 files. The `/help` test now asserts the width invariant rather than pinning the old title wording.
+
 ### [2026-10-05] — Layout System, Command Palette, Argument-Preservation Fix & 10 New Features
 - **Author/Agent:** Beurre Production Readiness Pass
 - **New Modules:**

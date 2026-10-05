@@ -697,31 +697,41 @@ export async function startRepl(initialModel?: string): Promise<void> {
         }
 
         case '/checkpoint': {
-          if (rest) {
-            const cp = loadCheckpoint(rest);
+          // `/checkpoint [save <label> | <id>]`. Saving exists because the empty
+          // state promises it; without this the list could only ever be empty.
+          const [verb, ...labelParts] = rest.split(' ').filter(Boolean);
+          if (!verb) {
+            console.log(`\n${renderCheckpoints(listCheckpoints(), contentWidth())}\n`);
+          } else if (verb === 'save') {
+            const id = `cp-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+            saveCheckpoint(id, labelParts.join(' ') || 'manual checkpoint', agent.getMessages());
+            console.log(`\n${renderToast(`Saved checkpoint ${id}`, true)}\n`);
+          } else {
+            const cp = loadCheckpoint(verb);
             if (!cp) {
-              console.log(`\n${renderErrorCard('No such checkpoint', rest)}\n`);
+              console.log(`\n${renderErrorCard('No such checkpoint', verb)}\n`);
             } else {
               agent.setMessages(cp.messages);
               console.log(`\n${renderToast(`Restored ${cp.id} (${cp.label})`, true)}\n`);
             }
-            break;
           }
-          console.log(`\n${renderCheckpoints(listCheckpoints(), contentWidth())}\n`);
           break;
         }
 
         case '/snippet': {
-          const [name, ...body] = rest.split(' ').filter(Boolean);
+          // `/snippet <name> [rm] <text>` — the name is the FIRST token, so
+          // `/snippet review add hello world` saves name="review", text=
+          // "hello world". Parsing the verb first silently dropped the name.
+          const [name, verb, ...body] = rest.split(' ').filter(Boolean);
           if (!name) {
             console.log(`\n${renderSnippets(listSnippets(), contentWidth())}\n`);
-          } else if (body[0] === 'add') {
-            saveSnippet(body[1] ?? '', body.slice(2).join(' '));
-            console.log(`\n${renderToast(`Saved snippet ${body[1]}`, true)}\n`);
-          } else if (body[0] === 'rm') {
+          } else if (verb === 'rm') {
             console.log(removeSnippet(name)
               ? `\n${renderToast(`Removed snippet ${name}`, true)}\n`
               : `\n${renderErrorCard('No such snippet', name)}\n`);
+          } else if (body.length > 0) {
+            saveSnippet(name, body.join(' '));
+            console.log(`\n${renderToast(`Saved snippet ${name}`, true)}\n`);
           } else {
             console.log(`\n${renderSnippets(listSnippets().filter((s) => s.name === name), contentWidth())}\n`);
           }
