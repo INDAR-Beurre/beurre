@@ -135,7 +135,7 @@ Within the interactive REPL (`beurre`):
 | `/envkeys [filter]` | Which environment variables are set, hiding secret values |
 | `/when add\|rm\|list` | Schedule work on a cron expression, validated before saving |
 | `/churn [file]` | Which lines of a file change most often |
-| `/hooks [rm <event> <n>]` | Shell commands fired at lifecycle points — a port of Claude Code's hooks |
+| `/hooks [rm <event> <n>]` | Shell commands fired at lifecycle points; a `pre-tool` hook can block a call |
 | **Sessions & cloud** | |
 | `/sessions` | List your cloud sessions |
 | `/resume <id>` | Resume a session from the cloud |
@@ -145,6 +145,18 @@ Within the interactive REPL (`beurre`):
 | `/usage` | Show token breakdown |
 | `/login [user] [pass]` | Sign in to your Relay account |
 | `/logout` | Sign out |
+| **Git intelligence** | |
+| `/review` | Review the uncommitted working tree — every changed file with its `+`/`-` counts |
+| `/blame-summary [file]` | Who owns a file, by share of its commits |
+| `/hotspots` | The most-churned files in the last 6 months, where bugs live |
+| **Memory** | |
+| `/decisions [title rationale]` | Record a decision with its reasoning, or list the log |
+| `/recall <term>` | Search decisions, notes and snippets at once, ranked by relevance |
+| `/prompts [name text]` | Save a reusable prompt, or list the ones you have saved |
+| **Transcripts** | |
+| `/transcript` | Save this session to a `.jsonl` transcript |
+| `/transcripts` | List saved transcripts, newest first |
+| `/replay <file>` | Replay a saved transcript in a readable frame |
 | **Agents** | |
 | `/subagents` | List native named subagents and model personas |
 | `/subagent <name> <task>` | Dispatch a task to a named subagent |

@@ -413,6 +413,57 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     description: 'Exit Beurre',
     category: 'General',
   },
+
+  // Memory
+  {
+    command: '/decisions',
+    description: 'Record and list decisions with the reasoning behind them',
+    category: 'Memory',
+  },
+  {
+    command: '/recall',
+    description: 'Search decisions, notes and snippets at once',
+    category: 'Memory',
+  },
+  {
+    command: '/prompts',
+    description: 'Save and list reusable prompts',
+    category: 'Memory',
+  },
+
+  // Session
+  {
+    command: '/transcript',
+    description: 'Save this session to a transcript file',
+    category: 'Session',
+  },
+  {
+    command: '/replay',
+    description: 'Replay a saved transcript',
+    category: 'Session',
+  },
+  {
+    command: '/transcripts',
+    description: 'List saved transcripts',
+    category: 'Session',
+  },
+
+  // Git
+  {
+    command: '/review',
+    description: 'Review the uncommitted working tree before committing',
+    category: 'Git',
+  },
+  {
+    command: '/blame-summary',
+    description: 'Show who owns each file, by commit share',
+    category: 'Git',
+  },
+  {
+    command: '/hotspots',
+    description: 'Show the most-churned files in the last 6 months',
+    category: 'Git',
+  },
 ];
 
 export function getPredictiveMatches(input: string): SlashCommandInfo[] {

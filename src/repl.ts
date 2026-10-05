@@ -152,6 +152,7 @@ import {
   toggleTodo,
   type WatchTarget,
 } from './features2.ts';
+import * as f3 from './features3.ts';
 
 // Every catch in this file only ever reads `.message`. Narrowing once here
 // replaces nine `catch (err: unknown)` sites with a sound type.
@@ -1033,6 +1034,91 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
         case '/ports': {
           console.log(`\n${renderPorts(listListeningPorts(), contentWidth()).join('\n')}\n`);
+          break;
+        }
+
+        case '/decisions': {
+          const args = rest.trim().split(/\s+/).filter(Boolean);
+          if (args.length >= 3 && args[0] === 'rm') {
+            console.log(f3.removeDecision(args.slice(1).join(' '))
+              ? `\n${b.green('Removed')} decision\n`
+              : `\n${b.red('No such decision:')} ${args.slice(1).join(' ')}\n`);
+          } else if (args.length >= 2) {
+            // Everything after the first word is the rationale, so a decision
+            // can be recorded in one line without quoting.
+            f3.saveDecision(args[0], args.slice(1).join(' '));
+            console.log(`\n${b.green('Recorded')} ${args[0]}\n`);
+          } else {
+            console.log('\n' + f3.renderDecisions(f3.loadDecisions(), contentWidth()).join('\n') + '\n');
+          }
+          break;
+        }
+
+        case '/prompts': {
+          const args = rest.trim().split(/\s+/).filter(Boolean);
+          if (args.length >= 2) {
+            f3.savePrompt(args[0], args.slice(1).join(' '));
+            console.log(`\n${b.green('Saved')} prompt ${args[0]}\n`);
+          } else {
+            console.log('\n' + f3.renderPrompts(f3.loadPrompts(), contentWidth()).join('\n') + '\n');
+          }
+          break;
+        }
+
+        case '/recall': {
+          const term = rest.trim();
+          if (!term) {
+            console.log(`\n${b.dim('usage:')} /recall <term>\n`);
+            break;
+          }
+          const hits: f3.RecallHit[] = [
+            ...f3.loadDecisions().map((d) => ({ source: 'decision' as const, label: d.title, text: `${d.rationale} ${d.area}` })),
+            ...listNotes().map((nn) => ({ source: 'note' as const, label: nn.tag, text: nn.text })),
+            ...listSnippets().map((s) => ({ source: 'snippet' as const, label: s.name, text: s.text })),
+          ];
+          console.log('\n' + f3.renderRecall(term, f3.rankRecall(term, hits), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/transcript': {
+          const file = f3.writeTranscript(agent.getMessages().map((m) => ({ role: m.role, content: m.content })));
+          console.log(`\n${b.green('Saved')} ${file}\n`);
+          break;
+        }
+
+        case '/transcripts': {
+          console.log('\n' + f3.renderTranscripts(f3.listTranscripts(), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/replay': {
+          const target = rest.trim();
+          if (!target) {
+            console.log(`\n${b.dim('usage:')} /replay <transcript>\n`);
+            break;
+          }
+          console.log('\n' + f3.renderReplay(target, f3.readTranscript(target), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/review': {
+          const rows = f3.reviewWorkspace(agent.getCwd());
+          console.log('\n' + (rows === null
+            ? f3.renderReview([], agent.getCwd(), contentWidth()).join('\n')
+            : f3.renderReview(rows, agent.getCwd(), contentWidth()).join('\n')) + '\n');
+          break;
+        }
+
+        case '/blame-summary': {
+          const target = rest.trim() || 'README.md';
+          const rows = f3.blameSummary(agent.getCwd(), path.resolve(agent.getCwd(), target));
+          console.log('\n' + f3.renderAuthors(rows ?? [], path.resolve(agent.getCwd(), target), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/hotspots': {
+          const rows = f3.hotspots(agent.getCwd());
+          console.log('\n' + f3.renderHotspots(rows ?? [], contentWidth()).join('\n') + '\n');
           break;
         }
 
