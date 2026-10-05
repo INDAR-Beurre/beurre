@@ -400,10 +400,12 @@ export function renderPalette(
   // Labels sit in a fixed column; values follow. `columns()` right-aligns its
   // second argument, so it floated the value to an arbitrary position and left
   // "Model" flush against its own value with no separating space.
-  // Never let the width cap pull the column below the longest label: that is
-  // what put "Shortcuts & commands" flush against its own value.
-  const widest = Math.max(...filtered.map((i) => stringWidth(i.title)));
-  const nameCol = widest + 2;
+  //
+  // The column must cover the 4-char gutter ("  " + pointer + space) as well as
+  // the title, or a filtered single-row menu measured the title alone and
+  // rendered "Working tree diffclean".
+  const GUTTER = 4;
+  const nameCol = GUTTER + Math.max(...filtered.map((i) => stringWidth(i.title))) + 2;
 
   const buildBody = (visible: number): string[] => {
     const w = listWindow(filtered, visible, activeIndex);
