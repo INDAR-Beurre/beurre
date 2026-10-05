@@ -448,18 +448,6 @@ export function buildInitPrompt(cwd: string): string {
 
 // --------------------------------------------------------- /lastcommand ----
 
-/** Re-run the last turn's prompt — the "undo, but keep it" button. */
-export function lastUserPrompt(messages: ChatMessage[]): string | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') {
-      const c = messages[i].content;
-      const text = typeof c === 'string' ? c : JSON.stringify(c ?? '');
-      return text.trim() || null;
-    }
-  }
-  return null;
-}
-
 // ---------------------------------------------------------- /testcmd ----
 
 /** The test command for a repo, so the user never has to guess or retype it. */

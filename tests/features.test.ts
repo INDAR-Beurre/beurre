@@ -8,7 +8,6 @@ import {
   detectTestCommand,
   estimateCost,
   grepWorkspace,
-  lastUserPrompt,
   outlineFile,
   renderCheckpoints,
   renderCost,
@@ -227,21 +226,6 @@ describe('features: /init and /testcmd', () => {
     fs.writeFileSync(path.join(jvm, 'build.gradle.kts'), '');
     expect(detectTestCommand(jvm)).toBe('./gradlew test');
     expect(detectTestCommand(fs.mkdtempSync(path.join(os.tmpdir(), 'beurre-none-')))).toBeNull();
-  });
-});
-
-describe('features: /lastcommand', () => {
-  it('returns the most recent user prompt', () => {
-    expect(lastUserPrompt([
-      { role: 'user', content: 'first' },
-      { role: 'assistant', content: 'reply' },
-      { role: 'user', content: '  second  ' },
-    ])).toBe('second');
-  });
-
-  it('returns null when nothing was asked', () => {
-    expect(lastUserPrompt([{ role: 'assistant', content: 'reply' }])).toBeNull();
-    expect(lastUserPrompt([])).toBeNull();
   });
 });
 
