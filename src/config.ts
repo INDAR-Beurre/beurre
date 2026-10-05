@@ -21,6 +21,26 @@ export interface BeurreConfig {
   autoSync: boolean;
   historyDir: string;
 }
+function relayKeyFromOmp(relayUrl: string): string | undefined {
+  // Read the key from the provider block that actually serves `relayUrl`.
+  // Taking the first `apiKey:` in the file grabbed whichever provider happened
+  // to be listed first — a valid key for the wrong gateway, which surfaces as
+  // "Missing or invalid gateway token" with no hint at the real cause.
+  const p = path.join(os.homedir(), '.omp', 'agent', 'models.yml');
+  if (!fs.existsSync(p)) return undefined;
+  try {
+    const content = fs.readFileSync(p, 'utf-8');
+    const host = new URL(relayUrl).host;
+    const blocks = content.split(/^\s*(?=[\w-]+:\s*$)/m);
+    for (const block of blocks) {
+      if (!block.includes(host)) continue;
+      return block.match(/apiKey:\s*(sk-[A-Za-z0-9_-]+)/)?.[1];
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
 
 const DEFAULT_CONFIG: BeurreConfig = {
   relayUrl: 'https://relay-gw.pages.dev/v1',
@@ -115,22 +135,11 @@ export function loadConfig(): BeurreConfig {
     }
   }
 
-  // Attempt to read API key from ~/.omp/agent/models.yml
-  let ompKey: string | undefined;
-  const ompModelsPath = path.join(os.homedir(), '.omp', 'agent', 'models.yml');
-  if (fs.existsSync(ompModelsPath)) {
-    try {
-      const content = fs.readFileSync(ompModelsPath, 'utf-8');
-      const match = content.match(/apiKey:\s*(sk-[A-Za-z0-9_-]+)/);
-      if (match) {
-        ompKey = match[1];
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  const apiKey = process.env.RELAY_API_KEY || userConfig.apiKey || ompKey || DEFAULT_CONFIG.apiKey;
+  const apiKey =
+    process.env.RELAY_API_KEY ||
+    userConfig.apiKey ||
+    relayKeyFromOmp(userConfig.relayUrl ?? DEFAULT_CONFIG.relayUrl) ||
+    DEFAULT_CONFIG.apiKey;
 
   return {
     ...DEFAULT_CONFIG,

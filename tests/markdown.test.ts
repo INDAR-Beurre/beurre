@@ -1,3 +1,4 @@
+import { stripAnsi } from '../src/layout.ts';
 import { describe, expect, it } from 'bun:test';
 import {
   renderMarkdownBlock,
@@ -48,8 +49,11 @@ describe('Markdown & Code Highlighting Engine', () => {
     highlighter.feed('Here is code:\n```ts\nconst x: number = 1;\n```\nDone.');
     highlighter.flush();
 
-    expect(output).toContain('💻 ts');
-    expect(output).toContain('const x');
-    expect(output).toContain('Done.');
+    // Strip ANSI first: syntax highlighting inserts escapes *inside* `const x`,
+    // so asserting against the coloured string proves nothing.
+    const plain = stripAnsi(output);
+    expect(plain).toContain('ts');
+    expect(plain).toContain('const x');
+    expect(plain).toContain('Done.');
   });
 });

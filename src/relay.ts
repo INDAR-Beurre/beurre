@@ -272,11 +272,15 @@ export class RelayClient {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
+    // Send both credentials. They were mutually exclusive here, so a stale
+    // cookie silently overrode a perfectly good API key and every call came
+    // back 401 "Missing or invalid gateway token".
+    if (this.config.apiKey) {
+      headers.Authorization = `Bearer ${this.config.apiKey}`;
+    }
     const cookie = extractCookie(this.config.cookieFile);
     if (cookie) {
       headers.Cookie = cookie;
-    } else if (this.config.apiKey) {
-      headers.Authorization = `Bearer ${this.config.apiKey}`;
     }
     return headers;
   }

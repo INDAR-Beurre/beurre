@@ -14,12 +14,13 @@
 
 // ---------------------------------------------------------------- ANSI ----
 
-// Sticky so it can be re-used at an arbitrary offset; one definition shared by
-// stripAnsi / stringWidth / truncate instead of three drifting copies.
-const ANSI_SEQ = /[\x1b\x9b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\x07)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))/y;
+// One definition shared by stripAnsi / stringWidth / truncate instead of three
+// drifting copies. Deliberately NOT sticky: with /y, `replace` anchors every
+// attempt to lastIndex, so escapes separated by plain text ("const\e[39m x")
+// were only stripped while they happened to run together from index 0.
+const ANSI_SEQ = /[\x1b\x9b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\x07)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))/g;
 
 export function stripAnsi(s: string): string {
-  ANSI_SEQ.lastIndex = 0;
   return s.replace(ANSI_SEQ, '');
 }
 

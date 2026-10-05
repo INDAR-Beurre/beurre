@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  stringWidth, truncate, padTo, fit, columns, box, rule, listWindow, charWidth,
+  stringWidth, truncate, padTo, fit, columns, box, rule, listWindow, charWidth, stripAnsi,
 } from '../src/layout.ts';
 
 // The invariant the whole UI rests on: a rendered line is never wider than the
@@ -159,5 +159,18 @@ describe('listWindow', () => {
   test('clamps an out-of-range selection', () => {
     const items = [1, 2, 3];
     expect(listWindow(items, 2, 99).start + listWindow(items, 2, 99).selected).toBe(2);
+  });
+});
+
+describe('stripAnsi on interleaved escapes', () => {
+  test('strips escapes separated by plain text', () => {
+    // The shared regex was sticky (/y), so replace only consumed the leading
+    // run of escapes and left the rest. That silently corrupted every width
+    // calculation built on top of it.
+    expect(stripAnsi('const\x1b[39m \x1b[38;2;156;220;254mx\x1b[39m:')).toBe('const x:');
+  });
+
+  test('measures width across multiple escape runs', () => {
+    expect(stringWidth('\x1b[31mred\x1b[39m \x1b[1mbold\x1b[22m')).toBe(8);
   });
 });

@@ -168,7 +168,9 @@ export class StreamingMarkdownHighlighter {
             `\n${colors.butterCrust}╭──${colors.bold}${colors.butterGold}${title}${colors.reset}${colors.butterCrust}${'─'.repeat(borderLen)}╮${colors.reset}\n`
           );
         } else {
-          this.onWrite(line + '\n');
+          // Inline markdown has to be rendered per line. Writing `line` raw
+          // left **bold**, `# headings` and `- bullets` showing their markers.
+          this.onWrite(renderMarkdownBlock(line, { columns: this.cols }) + '\n');
         }
       } else {
         const trimmed = line.trim();
@@ -196,7 +198,7 @@ export class StreamingMarkdownHighlighter {
         }
         this.inCodeBlock = false;
       } else {
-        this.onWrite(this.buffer);
+        this.onWrite(renderMarkdownBlock(this.buffer, { columns: this.cols }));
       }
       this.buffer = '';
     } else if (this.inCodeBlock) {
