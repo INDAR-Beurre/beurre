@@ -116,19 +116,21 @@ export function formatShortCwd(cwd: string): string {
 
 
 /**
- * The Beurre mark: a slab of butter, sliced, with the corner melting away.
+ * The Beurre mark: a slab of butter, sliced, with the corner
+ * melting away.
  *
- * Drawn with block glyphs rather than emoji so it inherits the terminal's own
- * font and can never render as a full-colour emoji, and sized so the whole
- * mark fits the two banner rows it shares with the wordmark. Three rows, not
- * a six-line banner — the same restraint the wordmark follows. `LOGO_GUTTER` is
- * measured from the widest row rather than hand-counted, which is what kept
- * the bold row from overrunning the right margin.
+ * Drawn with block glyphs rather than emoji so it inherits the
+ * terminal's own font and can never render as a full-colour emoji.
+ * Three rows, not a six-line banner — the same restraint the
+ * wordmark follows. Every row is drawn at the same width so the
+ * mark reads as one solid shape: the first cut used a four-cell
+ * taper under a six-cell slab, so the bottom edge stopped two
+ * columns early and the mark looked bitten from the right.
  */
 const BUTTER_MARK = [
-  '▟████▙',
+  '▟████▛',
   '██████',
-  '▗▄▄▄▖',
+  '▗▄▄▄▘',
 ] as const;
 
 const MARK_TINT = [colors.butterPale, colors.butterGold, colors.butterMelt] as const;

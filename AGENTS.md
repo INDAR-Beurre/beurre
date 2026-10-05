@@ -192,6 +192,13 @@ All tests must pass with **100% green status** (0 failures).
 
 > **AI AGENT INSTRUCTION:** Append all future changes to this section in reverse chronological order.
 
+### [2026-10-05] — Lightning Mark, Enter Autofill, Redraw Fix
+- **Author/Agent:** Beurre Production Readiness Pass, round eight (843 tests)
+- **The mark is a lightning bolt now.** `BUTTER_MARK` is `⚡` drawn in block glyphs (`▟▛` top, `██████` middle, `▗▄▄▘` bottom), all three rows spanning the same six columns. The old butter taper stopped two columns short of the slab, so the mark read as bitten from the right.
+- **Enter autocompletes a unique slash-command prefix.** `/g` + Enter completes to `/grep ` and stays in the prompt (the command may still take arguments); a second Enter sends it. A prefix matching several commands (`/m` → models/model/menu) still submits verbatim — guessing would silently run `/think` when you typed `/t`. Arguments already typed are never clobbered: `/grep foo bar` submits as-is.
+- **The prompt redraws in one write.** The frame body and the cursor-positioning escape were two separate `stdout.write` calls, so the next keystroke's erase could land while the tail of the frame was still being emitted — the line being written survived the erase and stacked up the scrollback, which is the "same text shows up multiple times" report. One write per frame makes the pty deliver it atomically.
+- **`/deps` is now the drift check, not the audit.** The f4 renderer reports violated version ranges (`dep ranges (N, M violated)`); the old `auditDependencies` box shared the name, which made the two indistinguishable in a transcript.
+
 ### [2026-10-05] — Width Contract, Seven New Commands, Test Isolation
 - **Author/Agent:** Beurre Production Readiness Pass, round seven (87 commands registered; 843 tests)
 - **Two renderer bugs found by fuzzing, not by using the app.** `renderDoctor` appended its summary line *outside* the box, so at 20 columns `/doctor` was the one overlay a column too wide; `renderOutline` returned a bare sentence when empty and rows when populated, so the screen drifted the moment the first declaration appeared. Both are now framed like their populated paths. `Math.max(...[])` is `-Infinity`, which fed NaN into the doctor's padding — guarded. `tests/width-contract.test.ts` now pins every renderer branch at nine widths and was proven red against both bugs.

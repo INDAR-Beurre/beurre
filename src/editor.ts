@@ -223,22 +223,22 @@ export function handleKeyStroke(
       return { state: s, action: 'none' };
     }
 
-    // Complete on Enter only when the match is UNAMBIGUOUS. With several
-    // candidates, submit exactly what was typed: silently running /think
-    // because you typed /t (or an alias named /t) is worse than no match.
-    // A command that already has arguments typed submits verbatim: completing
-    // here would silently discard everything after the command name.
+    // Complete on Enter. A prefix with exactly one match fills in
+    // the command and keeps the prompt open — the command may still
+    // take arguments the user has not typed yet. A prefix with
+    // several matches submits what was typed: silently running
+    // /think because you typed /t (or an alias named /t) is worse
+    // than no match. A command that already has arguments typed
+    // submits verbatim: completing here would silently discard
+    // everything after the command name.
     if (s.autocompleteMatches.length === 1 && s.selectedAutocompleteIdx === 0) {
       const selected = s.autocompleteMatches[0];
-      // Either the command is already exact, or arguments are attached.
-      // Both mean the user finished typing: submit verbatim. Completing here
-      // is what made `/outline src/features.ts` arrive as a bare `/outline`.
       if (s.buffer === selected.command || s.buffer.includes(' ')) {
         s.autocompleteMatches = [];
         return { state: s, action: 'submit', submittedValue: s.buffer };
       }
-      // Prefix only: offer the completion, but do not submit on Enter — the
-      // command may still take arguments the user has not typed yet.
+      // Prefix only: complete to the command and stay in the prompt,
+      // because the command may take arguments not typed yet.
       s.buffer = selected.command + ' ';
       s.cursor = s.buffer.length;
       s.autocompleteMatches = [];
@@ -735,7 +735,12 @@ export class BeurreEditor {
           }
         }
 
-        // Write all lines
+        // Write all lines in ONE write. Two writes per frame let the
+        // erase of the next render race the tail of this one: the
+        // terminal can still be emitting the last line when the
+        // move-up arrives, so the erase lands a line too low and the
+        // line that was being written survives — the "same line shows
+        // up twice" report. One write is atomic per chunk on the pty.
         stdout.write(drawnLines.join('\n'));
         lastRenderedLinesCount = drawnLines.length;
 

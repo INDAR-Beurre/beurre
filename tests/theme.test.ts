@@ -455,11 +455,13 @@ describe('the Beurre mark', () => {
   it('renders three tinted rows', () => {
     const mark = logoMark();
     expect(mark).toHaveLength(3);
-    // A slab of butter, sliced: solid block in the middle, a pale cut line on
-    // top, a melted taper underneath.
-    expect(stripAnsi(mark[0])).toBe('▟████▙');
+    // A slab of butter, sliced: solid block in the middle, a pale cut
+    // line on top, a melted taper underneath. All three rows span the
+    // same six columns — the taper used to stop two columns early and
+    // the mark looked bitten from the right.
+    expect(stripAnsi(mark[0])).toBe('▟████▛');
     expect(stripAnsi(mark[1])).toBe('██████');
-    expect(stripAnsi(mark[2])).toBe('▗▄▄▄▖');
+    expect(stripAnsi(mark[2])).toBe('▗▄▄▄▘');
   });
 
   it('leaves no row wider than the width it reserves', () => {
