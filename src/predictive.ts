@@ -229,6 +229,63 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
   },
 
   {
+    command: '/notes',
+    argsHint: '[add <tag> <text> | rm <tag> | <tag>]',
+    description: 'Scratch notes that survive restarts',
+    category: 'Workflow',
+  },
+  {
+    command: '/todo',
+    argsHint: '[add <text> | done <text> | clear]',
+    description: 'A checklist that survives restarts',
+    category: 'Workflow',
+  },
+  {
+    command: '/alias',
+    argsHint: '<name> [rm] <expansion>',
+    description: 'Name any command and type /name instead',
+    category: 'Workflow',
+  },
+  {
+    command: '/tokens',
+    argsHint: '<prompt>',
+    description: 'Break a prompt into prose and code by size',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/changes',
+    description: 'Line counts for everything you have edited',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/watch',
+    argsHint: '[path ...]',
+    description: 'Check what a path currently is and how big',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/cache',
+    description: 'Where the disk went: build output by size',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/keys',
+    description: 'Every editor shortcut, in one screen',
+    category: 'Core',
+  },
+  {
+    command: '/preflight',
+    description: 'Diagnose why a model is not answering',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/export',
+    argsHint: '[md|json|txt]',
+    description: 'Write the transcript to a file',
+    category: 'Tools',
+  },
+
+  {
     command: '/thinking',
     argsHint: '[expanded|collapsed|hidden]',
     description: 'Show the last reasoning block, or set how thinking is displayed',

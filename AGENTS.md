@@ -192,6 +192,32 @@ All tests must pass with **100% green status** (0 failures).
 
 > **AI AGENT INSTRUCTION:** Append all future changes to this section in reverse chronological order.
 
+### [2026-10-05] — Ten New Features, Box Title Deduplication & Unambiguous Completion
+- **Author/Agent:** Beurre Production Readiness Pass, round two (playtest matrix: 21 commands x 30/46/80/120 cols)
+- **Ten New Features (`src/features2.ts`, all dispatched in `src/repl.ts`):**
+  | Command | What it does |
+  |---|---|
+  | `/notes` | Scratch notes persisted to `~/.beurre/notes.json`; `add`/`rm`/list-by-tag |
+  | `/todo` | A checklist persisted to `todos.json`; `add`/`done`/`clear` |
+  | `/alias` | Names any command (`/alias ll ls -la`), expanded in the input path before slash dispatch |
+  | `/tokens` | Splits a prompt into prose vs fenced code by character share, measured honestly rather than pretending a chars-per-token constant is a tokenizer |
+  | `/changes` | `git diff --numstat` as per-file line counts |
+  | `/watch` | Reports what a path actually is (file/dir/link/missing) and its size |
+  | `/cache` | Directory sizes for `node_modules`, `build`, `dist`, `.git` |
+  | `/keys` | Every editor shortcut on one screen, stacked below ~24 columns |
+  | `/preflight` | Credential, URL, git and relay-reachability diagnosis when a model will not answer |
+  | `/export` | **Upgraded**, not duplicated: now writes `md`, `json` or `txt` via a format list |
+- **Critical Bugs Fixed at the Root Cause:**
+  1. **Every titled box printed its header twice (`src/layout.ts`)** — `box()` built one `rule()` helper and called it for *both* the top and bottom border, so `╭─ notes (1) ─╮ … ╰─ notes (1) ─╯` framed every titled box in the app. Split into `topRule()` plus a plain bottom rule.
+  2. **`/usage` counted replies as prompts (`src/repl.ts`)** — the assistant branch added to `userChars`, so the prompt total was inflated by everything the model said. Split into `promptChars` / `completionChars` / `toolChars` and relabelled the ratio line.
+  3. **`/notes add <tag> <text>` saved under the tag `add` (`src/repl.ts`)** — parsing was tag-then-verb (the `/snippet` shape), so the verb became the tag and the real tag became the note body. Now verb-first, matching `/todo`.
+  4. **Enter silently picked the first of several autocomplete matches (`src/editor.ts`)** — typing `/t` and pressing Enter ran `/think`. A shell must never guess between candidates; completion on Enter is now accepted only when exactly one match exists. Space and Tab still complete from the *selected* match, because there the user has navigated deliberately.
+  5. **`loadConfig` was used in `repl.ts` but never imported** — a latent `ReferenceError` that would have thrown the moment the new `/preflight` case ran.
+  6. **Footer lines bypassed `box()`'s truncation (`src/features2.ts`)** — summaries joined in *after* `box(...)` are never truncated, so `/todo`'s hint ran 52 columns wide at a 30-column frame and made the next redraw erase the wrong number of rows. Every such line, plus every empty-state message, now goes through `truncate(…, width)`.
+  7. **`git diff` sprayed its full usage text on a non-repo (`src/features2.ts`)** — `execSync` inherited stderr; now `stdio: ['ignore','pipe','ignore']`.
+- **Tests:** 354 pass / 0 fail across 18 files. New `tests/features2.test.ts` asserts the width invariant over **19 renderers x 7 widths = 133 cases**, which is what pinned the footer overflow. Unused `os` and `columns` imports removed.
+- **Verified by playtest:** every new command driven in a real pty at 30/46/80/120 columns, including the `/todo` add/toggle lifecycle and `/alias` expansion actually running `/todo`.
+
 ### [2026-10-05] — Relay Authentication, Markdown Rendering & Total Type Safety
 - **Author/Agent:** Beurre Production Readiness Pass (playtest matrix: 25 commands x 5 widths x 30/40/46/62/80/120 cols)
 - **Critical Bugs Fixed at the Root Cause:**

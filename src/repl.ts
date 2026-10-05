@@ -6,6 +6,7 @@ import { BeurreAgent } from './agent.ts';
 import { relay, getModelDisplayName, type ChatMessage } from './relay.ts';
 import { listSubagents, runNamedSubagent } from './subagents.ts';
 import { compactMessages } from './compact.ts';
+import { loadConfig } from './config.ts';
 import { BeurreLoopRunner } from './loop.ts';
 import { showMenu } from './menu.ts';
 import { openModelPicker } from './model-picker.ts';
@@ -66,6 +67,35 @@ import {
   markOnboarded,
   renderWelcome,
 } from './features.ts';
+import {
+  addTodo,
+  clearDoneTodos,
+  diagnoseRelay,
+  expandAlias,
+  exportTranscript,
+  inspectPath,
+  keybindings,
+  listAliases,
+  listNotes,
+  listTodos,
+  measureCache,
+  readWorkingTree,
+  removeNote,
+  renderAliases,
+  renderCache,
+  renderChanges,
+  renderExport,
+  renderKeybindings,
+  renderNotes,
+  renderPreflight,
+  renderTokens,
+  renderTodos,
+  renderWatch,
+  saveAlias,
+  saveNote,
+  toggleTodo,
+  type WatchTarget,
+} from './features2.ts';
 
 // Every catch in this file only ever reads `.message`. Narrowing once here
 // replaces nine `catch (err: unknown)` sites with a sound type.
@@ -177,6 +207,11 @@ export async function startRepl(initialModel?: string): Promise<void> {
     }
 
     let trimmed = rawInput.trim();
+
+    // `/alias ll "ls -la"` makes `/ll` run `ls -la`. Expanded before slash
+    // dispatch so an alias can itself be another slash command.
+    const expanded = expandAlias(trimmed, listAliases());
+    if (expanded !== null) trimmed = expanded;
     if (!trimmed) {
       continue;
     }
@@ -564,44 +599,28 @@ export async function startRepl(initialModel?: string): Promise<void> {
         }
 
         case '/export': {
-          const defaultPath = path.join(agent.getCwd(), `beurre-session-${new Date().toISOString().slice(0, 10)}.md`);
-          const exportPath = rest ? path.resolve(agent.getCwd(), rest) : defaultPath;
-          const msgs = agent.getMessages();
-          const mdLines = [
-            `# Beurre Session Export`,
-            `_Session ID: ${agent.getSessionId()} | Model: ${getModelDisplayName(agent.getModel())} (${agent.getModel()}) | Effort: ${agent.getEffort()} | Exported: ${new Date().toLocaleString()}_`,
-            '',
-          ];
-          for (const m of msgs) {
-            if (m.role === 'system') continue;
-            if (m.role === 'user') {
-              mdLines.push(`## User\n\n${m.content}\n`);
-            } else if (m.role === 'assistant') {
-              mdLines.push(`## Beurre (${getModelDisplayName(agent.getModel())})\n\n${m.content}\n`);
-            } else if (m.role === 'tool') {
-              mdLines.push(`> **Tool Result (${m.name || 'tool'})**:\n\`\`\`\n${m.content.slice(0, 500)}\n\`\`\`\n`);
-            }
-          }
-          try {
-            fs.writeFileSync(exportPath, mdLines.join('\n'), 'utf-8');
-            console.log(`\n${renderToast(`Session exported successfully to: ${exportPath}`, true)}\n`);
-          } catch (err: unknown) {
-            console.log(renderErrorCard('Export Error', errorMessage(err)));
-          }
+          // `/export [format]` writes the transcript as md, json or txt.
+          // Formats are named because a bare `/export some/path` was
+          // ambiguous with the format list.
+          const fmt = rest.trim() || 'md';
+          const file = exportTranscript(agent.getMessages(), fmt, agent.getCwd());
+          console.log(`\n${renderExport(file, fmt, contentWidth())}\n`);
           break;
         }
 
         case '/usage': {
           const msgs = agent.getMessages();
-          let userChars = 0;
-          let assistantChars = 0;
+          let promptChars = 0;
+          let completionChars = 0;
           let toolChars = 0;
           for (const m of msgs) {
-            if (m.role === 'user') userChars += m.content?.length || 0;
-            else if (m.role === 'assistant') userChars += m.content?.length || 0;
+            if (m.role === 'user') promptChars += m.content?.length || 0;
+            // Assistant output was being added to the PROMPT total, so /usage
+            // overstated what you sent by however much the model replied.
+            else if (m.role === 'assistant') completionChars += m.content?.length || 0;
             else if (m.role === 'tool') toolChars += m.content?.length || 0;
           }
-          const totalEstTokens = Math.round((userChars + assistantChars + toolChars) / 4);
+          const totalEstTokens = Math.round((promptChars + completionChars + toolChars) / 4);
           const modelName = getModelDisplayName(agent.getModel());
           console.log('\n' + box({
             title: 'Session Usage & Context Breakdown',
@@ -611,7 +630,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
               `${b.bold('Reasoning Effort:')} ${b.gold(agent.getEffort().toUpperCase())}`,
               `${b.bold('Session Messages:')} ${b.cream(msgs.length)} turns`,
               `${b.bold('Estimated Tokens:')} ${b.gold(`~${totalEstTokens.toLocaleString()} tokens`)}`,
-              `${b.bold('Message Ratio:')}    ${b.dim(`User: ~${Math.round(userChars/4)} tok • Assistant: ~${Math.round(assistantChars/4)} tok • Tools: ~${Math.round(toolChars/4)} tok`)}`,
+              `${b.bold('Message Ratio:')}    ${b.dim(`Prompt: ~${Math.round(promptChars/4)} tok • Completion: ~${Math.round(completionChars/4)} tok • Tools: ~${Math.round(toolChars/4)} tok`)}`,
               `${b.bold('Relay Status:')}     ${b.green('● LIVE (relay-gw.pages.dev)')}`,
             ],
           }).join('\n') + '\n');
@@ -749,6 +768,96 @@ export async function startRepl(initialModel?: string): Promise<void> {
           } else {
             console.log(`\n${renderSnippets(listSnippets().filter((s) => s.name === name), contentWidth())}\n`);
           }
+          break;
+        }
+
+        case '/notes': {
+          // `/notes add <tag> <text>` — the verb comes FIRST here, unlike
+          // /snippet where the name comes first. Parsing tag-then-verb made
+          // "add" the tag and silently saved every note under the wrong key.
+          const [first, second, ...rest2] = rest.split(' ').filter(Boolean);
+          if (!first) {
+            console.log(`\n${renderNotes(listNotes(), contentWidth())}\n`);
+          } else if (first === 'add' && second) {
+            saveNote(second, rest2.join(' '));
+            console.log(`\n${renderToast(`Saved note ${second}`, true)}\n`);
+          } else if (first === 'rm' && second) {
+            console.log(removeNote(second)
+              ? `\n${renderToast(`Removed note ${second}`, true)}\n`
+              : `\n${renderErrorCard('No such note', second)}\n`);
+          } else {
+            console.log(`\n${renderNotes(listNotes().filter((n) => n.tag === first), contentWidth())}\n`);
+          }
+          break;
+        }
+
+        case '/todo': {
+          const [verb, ...body] = rest.split(' ').filter(Boolean);
+          const text = body.join(' ');
+          if (!verb) {
+            console.log(`\n${renderTodos(listTodos(), contentWidth())}\n`);
+          } else if (verb === 'add' && text) {
+            addTodo(text);
+            console.log(`\n${renderToast(`Added "${text}"`, true)}\n`);
+          } else if (verb === 'done' && text) {
+            console.log(toggleTodo(text)
+              ? `\n${renderToast(`Toggled "${text}"`, true)}\n`
+              : `\n${renderErrorCard('No such todo', text)}\n`);
+          } else if (verb === 'clear') {
+            console.log(`\n${renderToast(`Cleared ${clearDoneTodos()} completed`, true)}\n`);
+          } else {
+            console.log(`\n${renderTodos(listTodos(), contentWidth())}\n`);
+          }
+          break;
+        }
+
+        case '/alias': {
+          const [name, ...body] = rest.split(' ').filter(Boolean);
+          if (!name) {
+            console.log(`\n${renderAliases(listAliases(), contentWidth())}\n`);
+          } else if (body[0] === 'rm') {
+            console.log(saveAlias(name, null)
+              ? `\n${renderToast(`Removed alias /${name}`, true)}\n`
+              : `\n${renderErrorCard('No such alias', name)}\n`);
+          } else if (body.length > 0) {
+            saveAlias(name, body.join(' '));
+            console.log(`\n${renderToast(`/${name} -> ${body.join(' ')}`, true)}\n`);
+          } else {
+            console.log(`\n${renderAliases(listAliases(), contentWidth())}\n`);
+          }
+          break;
+        }
+
+        case '/tokens': {
+          console.log(`\n${renderTokens(rest, contentWidth())}\n`);
+          break;
+        }
+
+        case '/changes': {
+          console.log(`\n${renderChanges(readWorkingTree(agent.getCwd()), contentWidth())}\n`);
+          break;
+        }
+
+        case '/watch': {
+          const paths = rest.split(' ').filter(Boolean);
+          const targets: WatchTarget[] = (paths.length > 0 ? paths : [agent.getCwd()]).map(inspectPath);
+          console.log(`\n${renderWatch(targets, contentWidth())}\n`);
+          break;
+        }
+
+        case '/cache': {
+          console.log(`\n${renderCache(measureCache(agent.getCwd()), contentWidth())}\n`);
+          break;
+        }
+
+        case '/keys': {
+          console.log(`\n${renderKeybindings(keybindings(), contentWidth())}\n`);
+          break;
+        }
+
+        case '/preflight': {
+          const cfg = loadConfig();
+          console.log(`\n${renderPreflight(diagnoseRelay(agent.getCwd(), cfg.relayUrl, Boolean(cfg.apiKey)), contentWidth())}\n`);
           break;
         }
 

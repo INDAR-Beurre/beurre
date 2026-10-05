@@ -1,2 +1,8 @@
 node_modules
 .DS_Store
+
+# /export writes the transcript into the working directory by default.
+beurre-transcript-*.md
+beurre-transcript-*.json
+beurre-transcript-*.txt
+beurre-session-*.md

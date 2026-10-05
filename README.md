@@ -105,6 +105,15 @@ Within the interactive REPL (`beurre`):
 | `/init` | Survey the repo and produce a grounded onboarding brief |
 | `/checkpoint [save <label> \| <id>]` | List checkpoints, save one, or restore by id |
 | `/snippet <name> [rm] <text>` | Save and reuse prompts |
+| `/notes [add <tag> <text> \| rm <tag>]` | Scratch notes that survive restarts |
+| `/todo [add <text> \| done <text> \| clear]` | A checklist that survives restarts |
+| `/alias <name> [rm] <expansion>` | Name any command and type `/name` instead |
+| `/tokens <prompt>` | Break a prompt into prose and code by size |
+| `/changes` | Line counts for everything you have edited |
+| `/watch [path ...]` | Check what a path currently is and how big |
+| `/cache` | Where the disk went: build output by size |
+| `/keys` | Every editor shortcut, in one screen |
+| `/preflight` | Diagnose why a model is not answering |
 | **Sessions & cloud** | |
 | `/sessions` | List your cloud sessions |
 | `/resume <id>` | Resume a session from the cloud |

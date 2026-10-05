@@ -216,20 +216,22 @@ export function box(opts: BoxOptions): string[] {
   const inner = width - 4; // border char + space, both sides
 
   // Composes to exactly `width` so every row of the box shares one width.
-  const rule = (left: string, right: string) => {
-    if (!opts.title) return left + g.h.repeat(width - 2) + right;
+  // The title belongs on the top rule only. Stamping it on the bottom too made
+  // every titled box read as a duplicated header.
+  const topRule = () => {
+    if (!opts.title) return g.tl + g.h.repeat(width - 2) + g.tr;
     const title = truncate(opts.title, Math.max(0, width - 8));
     const dashes = width - 3 - stringWidth(title) - 2;
-    if (dashes < 0) return left + g.h.repeat(Math.max(0, width - 2)) + right;
-    return `${left}${g.h} ${title} ${g.h.repeat(dashes)}${right}`;
+    if (dashes < 0) return g.tl + g.h.repeat(Math.max(0, width - 2)) + g.tr;
+    return `${g.tl}${g.h} ${title} ${g.h.repeat(dashes)}${g.tr}`;
   };
 
-  const out: string[] = [rule(g.tl, g.tr, g.h)];
+  const out: string[] = [topRule()];
   for (const l of opts.lines ?? []) out.push(`${g.v} ${fit(l, inner)} ${g.v}`);
   if (opts.footer) {
     out.push(`${g.v} ${fit(opts.footer, inner)} ${g.v}`);
   }
-  out.push(rule(g.bl, g.br, g.h));
+  out.push(g.bl + g.h.repeat(width - 2) + g.br);
   return out;
 }
 

@@ -223,23 +223,22 @@ export function handleKeyStroke(
       return { state: s, action: 'none' };
     }
 
-    // If autocomplete is visible, complete command or submit directly.
+    // Complete on Enter only when the match is UNAMBIGUOUS. With several
+    // candidates, submit exactly what was typed: silently running /think
+    // because you typed /t (or an alias named /t) is worse than no match.
     // A command that already has arguments typed submits verbatim: completing
     // here would silently discard everything after the command name.
-    if (s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
-      const selected = s.autocompleteMatches[s.selectedAutocompleteIdx];
-      const hasArgs = s.buffer.includes(' ');
-      if (selected && !hasArgs) {
-        if (!selected.argsHint || s.buffer === selected.command) {
-          s.buffer = selected.command;
-          s.autocompleteMatches = [];
-          return { state: s, action: 'submit', submittedValue: selected.command };
-        }
-        s.buffer = selected.command + ' ';
-        s.cursor = s.buffer.length;
+    if (s.autocompleteMatches.length === 1 && s.selectedAutocompleteIdx === 0) {
+      const selected = s.autocompleteMatches[0];
+      if (!selected.argsHint || s.buffer === selected.command) {
+        s.buffer = selected.command;
         s.autocompleteMatches = [];
-        return { state: s, action: 'none' };
+        return { state: s, action: 'submit', submittedValue: selected.command };
       }
+      s.buffer = selected.command + ' ';
+      s.cursor = s.buffer.length;
+      s.autocompleteMatches = [];
+      return { state: s, action: 'none' };
     }
 
     return { state: s, action: 'submit', submittedValue: s.buffer };
