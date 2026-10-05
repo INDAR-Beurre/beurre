@@ -112,8 +112,18 @@ const DEFAULT_CONFIG: BeurreConfig = {
   historyDir: path.join(os.homedir(), '.beurre', 'sessions'),
 };
 
+/**
+ * Root for sessions, transcripts, tasks and scratch.
+ *
+ * BEURRE_HOME is honoured so a test — or a second install that must not touch
+ * your real history — can redirect every path at once. Without it every
+ * consumer hardcoded `~/.beurre`, which made the whole state surface
+ * untestable and silently wrote test rows into the user's home.
+ */
 export function getBeurreDir(): string {
-  const dir = path.join(os.homedir(), '.beurre');
+  const dir = process.env.BEURRE_HOME
+    ? path.resolve(process.env.BEURRE_HOME)
+    : path.join(os.homedir(), '.beurre');
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }

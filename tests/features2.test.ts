@@ -736,21 +736,22 @@ describe('contentWidth never exceeds the terminal', () => {
 });
 
 describe('hooks', () => {
-  // hooks.json is real user configuration, so every test that writes it backs
-  // the file up first and restores it after -- a test that silently replaced
-  // someone's guard script would be worse than no test.
-  const HOOKS = path.join(os.homedir(), '.beurre', 'hooks.json');
-  let backup: string | null = null;
+  // hooks.json is real user configuration, so no test may touch
+  // the real one: a test that replaced someone's guard script
+  // would be worse than no test. The hooks path comes from
+  // getBeurreDir(), which resolves through BEURRE_HOME, so
+  // redirect it at a scratch dir and everything under test
+  // stays inside the suite.
+  const BEURRE_HOME = path.join(import.meta.dir, '..', '.beurre-test-hooks');
+  const HOOKS = path.join(BEURRE_HOME, 'hooks.json');
 
   beforeEach(() => {
-    backup = fs.existsSync(HOOKS) ? fs.readFileSync(HOOKS, 'utf-8') : null;
+    fs.rmSync(BEURRE_HOME, { recursive: true, force: true });
+    process.env.BEURRE_HOME = BEURRE_HOME;
   });
   afterEach(() => {
-    if (backup === null) {
-      if (fs.existsSync(HOOKS)) fs.rmSync(HOOKS);
-    } else {
-      fs.writeFileSync(HOOKS, backup, 'utf-8');
-    }
+    delete process.env.BEURRE_HOME;
+    fs.rmSync(BEURRE_HOME, { recursive: true, force: true });
   });
 
   const write = (rules: Record<string, unknown>) => {

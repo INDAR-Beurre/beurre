@@ -126,6 +126,13 @@ Within the interactive REPL (`beurre`):
 | `/todoscan` | Find TODO, FIXME and HACK markers across the tree |
 | `/time` | How long this session has run, and per turn |
 | `/deps [path]` | Which installed dependencies no longer match package.json |
+| `/since [rev]` | Commits since a revision, with author and age |
+| `/todo-due [task [date]]` | Tasks with a due date; overdue first |
+| `/bigfiles [limit]` | Largest tracked files, by bytes and line count |
+| `/scratch [text]` | Durable scratchpad that survives restarts |
+| `/loc` | Lines of code grouped by language |
+| `/compat` | Runtime requirements this environment meets |
+| `/what-changed [rev]` | Files you changed and who else touched them |
 | `/changelog [version]` | Group recent commits into a release changelog |
 | `/open <path\|url>` | Open a file, folder or URL in the right application |
 | `/permissions [mode]` | `ask`, `auto-read` or `yolo` — how much runs without asking |

@@ -153,6 +153,7 @@ import {
   type WatchTarget,
 } from './features2.ts';
 import * as f3 from './features3.ts';
+import * as f4 from './features4.ts';
 
 // Every catch in this file only ever reads `.message`. Narrowing once here
 // replaces nine `catch (err: unknown)` sites with a sound type.
@@ -1119,6 +1120,83 @@ export async function startRepl(initialModel?: string): Promise<void> {
         case '/hotspots': {
           const rows = f3.hotspots(agent.getCwd());
           console.log('\n' + f3.renderHotspots(rows ?? [], contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/since': {
+          const rev = rest.trim() || 'HEAD~5';
+          const rows = f4.commitsSince(agent.getCwd(), rev);
+          console.log('\n' + (rows === null
+            ? `${b.red(`cannot read revision`)}: ${rev}\n`
+            : f4.renderCommits(rows, `since ${rev}`, contentWidth()).join('\n')) + '\n');
+          break;
+        }
+
+        case '/todo-due': {
+          const parts = rest.trim().split(/\s+/).filter(Boolean);
+          if (parts[0] === 'rm' && parts.slice(1).join(' ')) {
+            const target = parts.slice(1).join(' ');
+            console.log('\n' + (f4.removeTask(target)
+              ? `${b.green('removed')} "${target}"\n`
+              : `${b.red('no such task')}: "${target}"\n`));
+            break;
+          }
+          if (parts.length > 0) {
+            const { text, due } = f4.parseTask(parts.join(' '));
+            if (!text) {
+              console.log(`\n${b.red('todo-due needs a task')}: /todo-due buy milk 2026-10-07\n`);
+              break;
+            }
+            f4.saveTask(text, due);
+            console.log(`\n${b.green('saved')} "${text}"${due ? ` (due ${due})` : ''}\n`);
+            break;
+          }
+          const today = new Date();
+          const items = f4.loadTasks()
+            .filter((t) => t.due !== null)
+            .map((t) => ({ text: t.text, due: t.due as string, overdue: f4.isOverdue(t.due as string, today) }))
+            .sort((a, b) => Number(b.overdue) - Number(a.overdue) || a.due.localeCompare(b.due));
+          console.log('\n' + f4.renderDue(items, contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/bigfiles': {
+          const limit = Math.min(20, Number.parseInt(rest.trim() || '8', 10) || 8);
+          console.log('\n' + f4.renderBigFiles(f4.biggestFiles(agent.getCwd(), limit), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/scratch': {
+          const parts = rest.trim().split(/\s+/);
+          if (parts[0] === 'rm' && parts[1]) {
+            const id = Number.parseInt(parts[1], 10);
+            console.log('\n' + (Number.isNaN(id) || !f4.removeScratch(id)
+              ? `${b.red('no scratch entry')}: ${parts[1]}\n`
+              : `${b.green('removed')} scratch #${id}\n`));
+            break;
+          }
+          if (rest.trim()) {
+            const entry = f4.addScratch(rest.trim());
+            console.log(`\n${b.green('jotted')} scratch #${entry.id}\n`);
+            break;
+          }
+          console.log('\n' + f4.renderScratch(f4.loadScratch(), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/loc': {
+          console.log('\n' + f4.renderLoc(f4.countLoc(agent.getCwd()), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/compat': {
+          console.log('\n' + f4.renderCompat(f4.compat(), contentWidth()).join('\n') + '\n');
+          break;
+        }
+
+        case '/what-changed': {
+          const rev = rest.trim() || 'HEAD~5';
+          console.log('\n' + f4.renderChanged(f4.changedWithHistory(agent.getCwd(), rev), contentWidth()).join('\n') + '\n');
           break;
         }
 

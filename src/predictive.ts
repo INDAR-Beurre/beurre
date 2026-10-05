@@ -289,6 +289,46 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Diagnostics',
   },
   {
+    command: '/since',
+    argsHint: '[rev]',
+    description: 'Commits since a revision, with author and age',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/todo-due',
+    argsHint: '[task [date] | rm <task>]',
+    description: 'Tasks with a due date; overdue first',
+    category: 'Workflow',
+  },
+  {
+    command: '/bigfiles',
+    argsHint: '[limit]',
+    description: 'Largest tracked files, by bytes and line count',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/scratch',
+    argsHint: '[text | rm <id>]',
+    description: 'Durable scratchpad that survives restarts',
+    category: 'Workflow',
+  },
+  {
+    command: '/loc',
+    description: 'Lines of code grouped by language',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/compat',
+    description: 'Runtime requirements this environment meets',
+    category: 'Diagnostics',
+  },
+  {
+    command: '/what-changed',
+    argsHint: '[rev]',
+    description: 'Files you changed and who else touched them',
+    category: 'Diagnostics',
+  },
+  {
     command: '/blame',
     argsHint: '<file>',
     description: 'Who last touched each line of a file',
