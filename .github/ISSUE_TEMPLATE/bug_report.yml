@@ -1,0 +1,38 @@
+name: 🐛 Bug Report
+description: File a bug report to help us improve Beurre
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue in **Beurre**! 🧈
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: "When running beurre with --boost, the following error occurred..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Beurre Version & Environment
+      description: Run `beurre --version` and `bun --version`.
+      placeholder: "Beurre v1.0.0, Bun v1.4.0, Linux x64"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Exact steps or command to reproduce the issue.
+      placeholder: "1. Run 'beurre'\n2. Type '/boost on'\n3. Observe..."
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Terminal Output / Stack Trace
+      description: Paste any error messages or logs.
+      render: shell
