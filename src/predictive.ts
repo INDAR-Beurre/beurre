@@ -80,6 +80,12 @@ export const SLASH_COMMANDS: SlashCommandInfo[] = [
     category: 'Models',
   },
   {
+    command: '/boost',
+    argsHint: '[on|off|status|<prompt>]',
+    description: 'Turbocharge reasoning to MAX effort with flagship model & deep planning',
+    category: 'Models',
+  },
+  {
     command: '/think',
     argsHint: '[expand|collapse|hide|show]',
     description: 'Toggle collapsible thinking blocks or inspect full reasoning trace',

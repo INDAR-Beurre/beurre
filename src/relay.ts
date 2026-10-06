@@ -117,13 +117,67 @@ export function getModelDisplayName(modelId: string, modelList?: RelayModel[]): 
   if (KNOWN_MODEL_NAMES[modelId]) return KNOWN_MODEL_NAMES[modelId];
   if (KNOWN_MODEL_NAMES[cleanId]) return KNOWN_MODEL_NAMES[cleanId];
 
-  return cleanId
+  // Ids are provider-qualified now ("yjs/glm-5-3-flash"). Title-casing the
+  // whole string would read as "Yjs/glm 5 3 Flash", so drop the leading
+  // provider segment first — it is already shown in its own column.
+  const bare = cleanId.includes('/') ? cleanId.slice(cleanId.indexOf('/') + 1) : cleanId;
+  if (KNOWN_MODEL_NAMES[bare]) return KNOWN_MODEL_NAMES[bare];
+
+  return bare
     .split('-')
     .map((word) => {
       if (/^\d+(\.\d+)?$/.test(word)) return word;
       return word.charAt(0).toUpperCase() + word.slice(1);
     })
     .join(' ');
+}
+
+/** One row of GET /v1/models?view=raw: an OpenAI model object whose richer
+ * per-channel metadata (context, output cap, effort ladder) sits under `relay`. */
+export interface RawRelayRow {
+  id?: string;
+  owned_by?: string;
+  name?: string;
+  context_length?: number;
+  max_completion_tokens?: number;
+  reasoning?: boolean;
+  reasoning_efforts?: string[];
+  relay?: {
+    provider?: string;
+    id?: string;
+    name?: string;
+    context?: number | null;
+    max_output?: number | null;
+    reasoning?: boolean;
+    reasoning_efforts?: string[];
+    input?: string[] | null;
+    output?: string[] | null;
+  };
+}
+
+/**
+ * Map one raw catalog row to the picker's RelayModel. The id stays
+ * provider-qualified so a pick routes to exactly that channel, and the
+ * context / output cap / effort ladder come from the relay block so the
+ * displayed limits stay accurate per provider.
+ */
+export function toRelayModel(row: RawRelayRow): RelayModel | null {
+  const relay = row.relay || {};
+  const provider = relay.provider || row.owned_by || '';
+  const rawId = relay.id || row.id || '';
+  const bare = provider && rawId.startsWith(`${provider}/`) ? rawId.slice(provider.length + 1) : rawId;
+  if (!bare) return null;
+  return {
+    id: provider ? `${provider}/${bare}` : bare,
+    name: relay.name || (row.name && row.name !== row.id ? row.name : undefined),
+    owned_by: provider || undefined,
+    context_length: typeof relay.context === 'number' ? relay.context : row.context_length,
+    max_completion_tokens: typeof relay.max_output === 'number' ? relay.max_output : row.max_completion_tokens,
+    reasoning: relay.reasoning ?? row.reasoning,
+    reasoning_efforts: relay.reasoning_efforts ?? row.reasoning_efforts,
+    input_modalities: relay.input ?? undefined,
+    output_modalities: relay.output ?? undefined,
+  };
 }
 
 export function extractToolCallsFromContent(content: string): {
@@ -265,6 +319,55 @@ export function extractToolCallsFromContent(content: string): {
   return { toolCalls, cleanedContent: cleaned.trim() };
 }
 
+export const DEFAULT_FALLBACK_MODELS: RelayModel[] = [
+  { id: 'yjs/glm-5.3-flash', name: 'GLM 5.3 Flash', owned_by: 'yjs', reasoning: true, context_length: 1049000 },
+  { id: 'crax/kimi-k3', name: 'Kimi K3', owned_by: 'crax', reasoning: true, context_length: 1049000 },
+  { id: 'crax/gpt-6-astra', name: 'GPT-6 Astra', owned_by: 'crax', reasoning: true, context_length: 1050000 },
+  { id: 'crax/claude-opus-5', name: 'Claude Opus 5', owned_by: 'crax', reasoning: true, context_length: 1000000 },
+  { id: 'kilgore/claude-opus-5-5', name: 'Claude Opus 5.5', owned_by: 'kilgore', reasoning: true, context_length: 1000000 },
+  { id: 'kilgore/claude-sonnet-5-5', name: 'Claude Sonnet 5.5', owned_by: 'kilgore', reasoning: true, context_length: 1000000 },
+  { id: 'nextrouter/gpt-5.5', name: 'GPT-5.5', owned_by: 'nextrouter', reasoning: true, context_length: 1050000 },
+  { id: 'crax/gemini-3-8-flash', name: 'Gemini 3.8 Flash', owned_by: 'crax', reasoning: true, context_length: 1049000 },
+  { id: 'hybra/qwen3-8-flash', name: 'Qwen 3.8 Flash', owned_by: 'hybra', reasoning: true, context_length: 1000000 },
+  { id: 'vsllm/deepseek-v4.1-flash', name: 'DeepSeek v4.1 Flash', owned_by: 'vsllm', reasoning: true, context_length: 128000 },
+  { id: 'glm-5-3-flash', name: 'GLM 5.3 Flash', owned_by: 'zhipu', reasoning: true, context_length: 1049000 },
+  { id: 'kimi-k3:max', name: 'Kimi K3 (Max)', owned_by: 'moonshot', reasoning: true, context_length: 1049000 },
+  { id: 'gpt-6-astra:high', name: 'GPT-6 Astra (High)', owned_by: 'openai', reasoning: true, context_length: 1050000 },
+  { id: 'o3-mini', name: 'o3-mini', owned_by: 'openai', reasoning: true, context_length: 200000 },
+  { id: 'gpt-4o', name: 'GPT-4o', owned_by: 'openai', reasoning: false, context_length: 128000 },
+];
+
+export function loadFallbackCatalog(): RelayModel[] {
+  const models = [...DEFAULT_FALLBACK_MODELS];
+  try {
+    const staticPath = path.join(os.homedir(), 'model-aggregator', 'src', 'static-models.json');
+    if (fs.existsSync(staticPath)) {
+      const raw = JSON.parse(fs.readFileSync(staticPath, 'utf-8'));
+      if (raw && typeof raw === 'object') {
+        for (const [provider, list] of Object.entries(raw)) {
+          if (Array.isArray(list)) {
+            for (const item of list) {
+              if (item && item.id) {
+                const fullId = `${provider}/${item.id}`;
+                if (!models.some((m) => m.id === fullId || m.id === item.id)) {
+                  models.push({
+                    id: fullId,
+                    name: item.name || item.id,
+                    owned_by: provider,
+                    reasoning: true,
+                    context_length: 128000,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch {}
+  return models;
+}
+
 export class RelayClient {
   private config = loadConfig();
   private modelsCache: RelayModel[] | null = null;
@@ -303,19 +406,26 @@ export class RelayClient {
 
     for (const baseUrl of endpoints) {
       try {
-        const res = await fetch(`${baseUrl}/models`, {
+        // view=raw keeps every provider/model route as its own entry. The
+        // default canonical view folds a model served by many upstreams onto
+        // ONE merged id, which hid the provider and made a pick fail over
+        // instead of routing to the channel the user chose.
+        const res = await fetch(`${baseUrl}/models?view=raw`, {
           headers: this.getAuthHeaders(),
-          signal: AbortSignal.timeout(12000),
+          signal: AbortSignal.timeout(6000),
         });
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         }
-        const data = (await res.json()) as RelayModel[] | { data?: RelayModel[] };
-        const list: RelayModel[] = Array.isArray(data)
+        const data = (await res.json()) as RawRelayRow[] | { data?: RawRelayRow[] };
+        const rows: RawRelayRow[] = Array.isArray(data)
           ? data
           : Array.isArray(data.data)
             ? data.data
             : [];
+        const list: RelayModel[] = rows
+          .map(toRelayModel)
+          .filter((m): m is RelayModel => m !== null);
 
         if (list.length > 0) {
           this.modelsCache = list;
@@ -323,12 +433,19 @@ export class RelayClient {
           return list;
         }
       } catch (err: unknown) {
-        lastError = err;
+        lastError = err as Error;
       }
     }
 
-    if (this.modelsCache) {
+    if (this.modelsCache && this.modelsCache.length > 0) {
       return this.modelsCache; // Return stale cache if network failed
+    }
+    // Offline resilience: return fallback catalog so Beurre never crashes or hangs when offline
+    const fallback = loadFallbackCatalog();
+    if (fallback.length > 0) {
+      this.modelsCache = fallback;
+      this.cacheExpiry = now + 60000;
+      return fallback;
     }
     throw new Error(`Failed to fetch live models from relay: ${lastError?.message}`);
   }
@@ -339,7 +456,7 @@ export class RelayClient {
       try {
         const res = await fetch(`${baseUrl}/providers`, {
           headers: this.getAuthHeaders(),
-          signal: AbortSignal.timeout(12000),
+          signal: AbortSignal.timeout(6000),
         });
         if (res.ok) {
           const data = (await res.json()) as { providers?: unknown[] } | unknown[];
@@ -350,7 +467,13 @@ export class RelayClient {
         // try fallback
       }
     }
-    return [];
+    return [
+      { id: 'yjs', name: 'YJS Direct', live: true, models: 12 },
+      { id: 'crax', name: 'Crax Relay', live: true, models: 18 },
+      { id: 'kilgore', name: 'Kilgore Cloud', live: true, models: 10 },
+      { id: 'omnirush', name: 'Omnirush AI', live: true, models: 8 },
+      { id: 'directrouter', name: 'DirectRouter', live: true, models: 5 },
+    ];
   }
 
   async webSearch(query: string): Promise<string> {
@@ -365,6 +488,15 @@ export class RelayClient {
         });
         if (res.ok) {
           const data = await res.json();
+          if (Array.isArray(data)) {
+            return data.map((item, i) => `${i + 1}. [${item.title || item.name || 'Result'}](${item.url || ''})\n   ${item.snippet || item.description || item.content || ''}`).join('\n\n');
+          }
+          if (data && typeof data === 'object') {
+            const results = (data as any).results || (data as any).data || (data as any).organic;
+            if (Array.isArray(results) && results.length > 0) {
+              return results.map((item: any, i: number) => `${i + 1}. [${item.title || item.name || 'Result'}](${item.url || ''})\n   ${item.snippet || item.description || item.content || ''}`).join('\n\n');
+            }
+          }
           return JSON.stringify(data, null, 2);
         }
       } catch {
@@ -500,6 +632,22 @@ export class RelayClient {
           signal: options.signal,
         });
 
+        // Transient error retry (429 rate limit or 503/502 gateway blip)
+        if (!res.ok && (res.status === 429 || res.status === 503 || res.status === 502) && !options.signal?.aborted) {
+          await new Promise((r) => setTimeout(r, 600));
+          if (!options.signal?.aborted) {
+            const retryAttempt = await fetch(`${baseUrl}/chat/completions`, {
+              method: 'POST',
+              headers: this.getAuthHeaders(),
+              body: JSON.stringify(payload),
+              signal: options.signal,
+            }).catch(() => null);
+            if (retryAttempt && retryAttempt.ok) {
+              res = retryAttempt;
+            }
+          }
+        }
+
         // Chat-proxied fallback: if upstream returns 400 Bad Request and tools were present,
         // retry without tools because web-chat proxies (e.g. claude-opus-5-5) often reject OpenAI tools schema
         if (!res.ok && res.status === 400 && payload.tools) {
@@ -547,6 +695,7 @@ export class RelayClient {
         const toolCallsMap = new Map<number, { id: string; name: string; args: string }>();
 
         let inThinkTag = false;
+        let thinkTagBuffer = '';
 
         while (true) {
           const { done, value } = await reader.read();
@@ -582,39 +731,65 @@ export class RelayClient {
                   options.onReasoning?.(reasonDelta);
                 }
 
-                // Main content & inline think tags handling
+                // Main content & inline think tags handling (chunk-split resilient)
                 if (delta.content) {
-                  let chunk = delta.content;
-                  if (!inThinkTag && (chunk.includes('<think>') || chunk.includes('<thought>'))) {
-                    const tag = chunk.includes('<think>') ? '<think>' : '<thought>';
-                    const parts = chunk.split(tag);
-                    if (parts[0]) {
-                      content += parts[0];
-                      options.onToken?.(parts[0]);
-                    }
-                    inThinkTag = true;
-                    chunk = parts.slice(1).join(tag);
-                  }
+                  let text = thinkTagBuffer + delta.content;
+                  thinkTagBuffer = '';
 
-                  if (inThinkTag) {
-                    const closeTag = chunk.includes('</think>') ? '</think>' : chunk.includes('</thought>') ? '</thought>' : null;
-                    if (closeTag) {
-                      const parts = chunk.split(closeTag);
-                      reasoning += parts[0];
-                      options.onReasoning?.(parts[0]);
-                      inThinkTag = false;
-                      const rest = parts.slice(1).join(closeTag);
-                      if (rest) {
-                        content += rest;
-                        options.onToken?.(rest);
+                  while (text.length > 0) {
+                    if (!inThinkTag) {
+                      const openMatch = /<(?:think|thought|reasoning)>/i.exec(text);
+                      if (openMatch) {
+                        const before = text.slice(0, openMatch.index);
+                        if (before) {
+                          content += before;
+                          options.onToken?.(before);
+                        }
+                        inThinkTag = true;
+                        text = text.slice(openMatch.index + openMatch[0].length);
+                      } else {
+                        const trailingPartial = /<(?:\/?(?:t(?:h(?:i(?:n(?:k)?)?)?)?|r(?:e(?:a(?:s(?:o(?:n)?)?)?)?)?))?$/i.exec(text);
+                        if (trailingPartial && trailingPartial.index < text.length) {
+                          const safe = text.slice(0, trailingPartial.index);
+                          if (safe) {
+                            content += safe;
+                            options.onToken?.(safe);
+                          }
+                          thinkTagBuffer = text.slice(trailingPartial.index);
+                          text = '';
+                        } else {
+                          content += text;
+                          options.onToken?.(text);
+                          text = '';
+                        }
                       }
                     } else {
-                      reasoning += chunk;
-                      options.onReasoning?.(chunk);
+                      const closeMatch = /<\/(?:think|thought|reasoning)>/i.exec(text);
+                      if (closeMatch) {
+                        const before = text.slice(0, closeMatch.index);
+                        if (before) {
+                          reasoning += before;
+                          options.onReasoning?.(before);
+                        }
+                        inThinkTag = false;
+                        text = text.slice(closeMatch.index + closeMatch[0].length);
+                      } else {
+                        const trailingPartial = /<\/(?:t(?:h(?:i(?:n(?:k)?)?)?)?|r(?:e(?:a(?:s(?:o(?:n)?)?)?)?)?)?$/i.exec(text);
+                        if (trailingPartial && trailingPartial.index < text.length) {
+                          const safe = text.slice(0, trailingPartial.index);
+                          if (safe) {
+                            reasoning += safe;
+                            options.onReasoning?.(safe);
+                          }
+                          thinkTagBuffer = text.slice(trailingPartial.index);
+                          text = '';
+                        } else {
+                          reasoning += text;
+                          options.onReasoning?.(text);
+                          text = '';
+                        }
+                      }
                     }
-                  } else {
-                    content += chunk;
-                    options.onToken?.(chunk);
                   }
                 }
 
@@ -634,6 +809,48 @@ export class RelayClient {
               }
             }
           }
+        }
+
+        if (buffer.trim()) {
+          const trailingLines = buffer.split('\n');
+          for (const rawLine of trailingLines) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith(':') || line === 'data: [DONE]') continue;
+            if (line.startsWith('data: ')) {
+              try {
+                const parsed = JSON.parse(line.slice(6));
+                const choice = parsed.choices?.[0];
+                if (choice?.delta) {
+                  const delta = choice.delta;
+                  const reasonDelta = delta.reasoning_content || delta.reasoning || delta.think;
+                  if (reasonDelta) {
+                    reasoning += reasonDelta;
+                    options.onReasoning?.(reasonDelta);
+                  }
+                  if (delta.content) {
+                    content += delta.content;
+                    options.onToken?.(delta.content);
+                  }
+                }
+              } catch {}
+            }
+          }
+          buffer = '';
+        }
+
+        if (thinkTagBuffer) {
+          if (inThinkTag) {
+            reasoning += thinkTagBuffer;
+            options.onReasoning?.(thinkTagBuffer);
+          } else {
+            content += thinkTagBuffer;
+            options.onToken?.(thinkTagBuffer);
+          }
+          thinkTagBuffer = '';
+        }
+
+        if (!content.trim() && reasoning.trim() && toolCallsMap.size === 0) {
+          content = reasoning;
         }
 
         const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {

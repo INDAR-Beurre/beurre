@@ -8,6 +8,7 @@ export interface AgentCallbacks {
   onToken?: (token: string) => void;
   onReasoning?: (reasoning: string) => void;
   onToolStart?: (name: string, args: Record<string, any>) => void;
+  onToolOutput?: (chunk: string) => void;
   onToolEnd?: (name: string, output: string, isError?: boolean, diff?: string) => void;
   onStatus?: (status: string) => void;
 }
@@ -326,7 +327,11 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
             cwd: this.cwd,
             signal,
             onOutput: (chunk) => {
-              // live tool streaming if needed
+              callbacks.onToolOutput?.(chunk);
+              const lastLine = chunk.trim().split('\n').filter(Boolean).pop();
+              if (lastLine) {
+                callbacks.onStatus?.(`Executing ${tc.name}: ${lastLine.slice(0, 35)}`);
+              }
             },
           });
 

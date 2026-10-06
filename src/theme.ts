@@ -341,16 +341,21 @@ export function formatToolCall(name: string, args: Record<string, unknown>, dura
 }
 
 export function formatToolResult(output: string, isError = false, durationMs?: number): string {
+  const cols = Math.min(process.stdout.columns || 80, 100);
   const icon = isError ? `${colors.red}✖ Error: ${colors.reset}` : `${colors.green}└─ ✔ ${colors.reset}`;
   const firstLine = output.trim().split('\n')[0] || '(empty)';
-  const preview = isError
-    ? `${colors.red}${firstLine.slice(0, 100)}${colors.reset}`
-    : `${colors.gray}${firstLine.slice(0, 100)}${colors.reset}`;
   const remaining = output.trim().split('\n').length - 1;
   const more = remaining > 0 ? ` ${colors.dim}(+${remaining} more lines)${colors.reset}` : '';
   const timing = durationMs !== undefined
     ? ` ${colors.dim}[${durationMs >= 1000 ? (durationMs / 1000).toFixed(1) + 's' : durationMs + 'ms'}]${colors.reset}`
     : '';
+
+  const maxPreview = Math.max(10, cols - 24);
+  const safeFirstLine = truncate(firstLine, maxPreview);
+
+  const preview = isError
+    ? `${colors.red}${safeFirstLine}${colors.reset}`
+    : `${colors.gray}${safeFirstLine}${colors.reset}`;
   return `  ${icon}${preview}${more}${timing}`;
 }
 
@@ -398,7 +403,9 @@ export class ButterSpinner {
 
   private render() {
     if (!this.isTTY) return;
-    process.stdout.write(`\r\x1b[K${colors.butterGold}${this.frames[this.idx]}${colors.reset} ${colors.butterCream}${this.message}${colors.reset}`);
+    const SHIMMER = [colors.butterGold, colors.butterPale, colors.butterGold, colors.butterMelt];
+    const tint = SHIMMER[this.idx % SHIMMER.length];
+    process.stdout.write(`\r\x1b[K${tint}${this.frames[this.idx]}${colors.reset} ${colors.butterCream}${this.message}${colors.reset}`);
   }
 }
 
@@ -435,19 +442,21 @@ export function formatWorkingPromptBar(options: WorkingBarRenderOptions = {}): s
   const maxStatusLen = Math.max(1, cols - prefixLen - 2);
 
   let displayedStatus = rawStatus;
-  if (stripAnsi(displayedStatus).length > maxStatusLen) {
-    displayedStatus = displayedStatus.slice(0, Math.max(0, maxStatusLen - 1)) + '…';
+  if (stringWidth(displayedStatus) > maxStatusLen) {
+    displayedStatus = truncate(displayedStatus, maxStatusLen);
   }
   let statusLine = `${prefix}${displayedStatus}${suffix}`;
-  while (stripAnsi(statusLine).length > cols && displayedStatus.length > 1) {
-    displayedStatus = displayedStatus.slice(0, -2) + '…';
+  while (stringWidth(statusLine) > cols && displayedStatus.length > 1) {
+    displayedStatus = truncate(displayedStatus, Math.max(1, stringWidth(displayedStatus) - 2));
     statusLine = `${prefix}${displayedStatus}${suffix}`;
   }
 
   // Model & footer metadata
   const modelName = options.model ? getModelDisplayName(options.model) : 'Beurre';
   const effortTag = options.effort ? options.effort.toLowerCase() : 'high';
-  const quotaTag = options.quotaText ? `${colors.cyan}${options.quotaText}${colors.reset}` : '';
+  const quotaTag = options.quotaText
+    ? (options.quotaText.includes('\x1b') ? options.quotaText : `${colors.cyan}${options.quotaText}${colors.reset}`)
+    : '';
   const userTag = options.user ? `${colors.butterCream}${options.user}${colors.reset}` : '';
 
   // Interactive steering prompt bar mode (Claude Code / OMP standard)
@@ -536,8 +545,8 @@ export function formatWorkingPromptBar(options: WorkingBarRenderOptions = {}): s
 
     const padStatus = Math.max(1, cols - leftLen - rightLen);
     let line4 = `${leftStatus}${' '.repeat(padStatus)}${rightStatus}`;
-    if (stripAnsi(line4).length > cols) {
-      line4 = line4.slice(0, cols);
+    if (stringWidth(line4) > cols) {
+      line4 = truncate(line4, cols);
     }
 
     return [line0, line1, inputLine, line3, line4];
@@ -586,8 +595,8 @@ export function formatWorkingPromptBar(options: WorkingBarRenderOptions = {}): s
 
   const padStatus = Math.max(1, cols - leftLen - rightLen);
   let line3 = `${leftStatus}${' '.repeat(padStatus)}${rightStatus}`;
-  if (stripAnsi(line3).length > cols) {
-    line3 = line3.slice(0, cols);
+  if (stringWidth(line3) > cols) {
+    line3 = truncate(line3, cols);
   }
 
   return [line0, line1, line2, line3];
@@ -624,9 +633,12 @@ export class BeurreWorkingBar {
   private currentPhase: 'idle' | 'status' | 'thinking' | 'generating' | 'tool' = 'status';
   private phaseStartTime = 0;
   private phaseDetail = '';
+  private baseToolDetail = '';
+  private liveDetail = '';
   private phaseTokens = 0;
   private phaseTokPerSec = 0;
   private phaseSnippet = '';
+  private isRendering = false;
 
   constructor(options: WorkingBarRenderOptions = {}) {
     this.options = { ...options };
@@ -914,6 +926,11 @@ export class BeurreWorkingBar {
           ? `${this.phaseTokPerSec.toFixed(1)} tok/s • `
           : (elapsed > 0 && this.phaseTokens > 0 ? `${(this.phaseTokens / elapsed).toFixed(1)} tok/s • ` : '');
         this.statusText = `Generating (~${this.phaseTokens} tokens • ${speed}${elapsed.toFixed(1)}s)...`;
+      } else if (this.currentPhase === 'status' && this.phaseStartTime > 0) {
+        const elapsed = (Date.now() - this.phaseStartTime) / 1000;
+        if (elapsed >= 0.5 && this.statusText.startsWith('Whipping up solution')) {
+          this.statusText = `Whipping up solution (${elapsed.toFixed(1)}s)...`;
+        }
       }
 
       if (this.tokenBuffer.length > 0) {
@@ -962,10 +979,13 @@ export class BeurreWorkingBar {
     }
   }
 
-  setGenerating(tokens: number, tokPerSec?: number, elapsedSec?: number): void {
+  setGenerating(tokens: number, tokPerSec?: number, elapsedSec?: number, snippet?: string): void {
     this.currentPhase = 'generating';
     this.customIcon = '';
     this.phaseTokens = tokens;
+    if (snippet !== undefined) {
+      this.phaseSnippet = snippet.slice(-30).trim();
+    }
     if (elapsedSec !== undefined && elapsedSec > 0) {
       this.phaseStartTime = Date.now() - Math.round(elapsedSec * 1000);
     } else if (this.phaseStartTime === 0) {
@@ -978,7 +998,8 @@ export class BeurreWorkingBar {
       ? `${tokPerSec.toFixed(1)} tok/s • `
       : (elapsed > 0 && tokens > 0 ? `${(tokens / elapsed).toFixed(1)} tok/s • ` : '');
     this.phaseTokPerSec = tokPerSec || (elapsed > 0 ? tokens / elapsed : 0);
-    this.statusText = `Generating (~${tokens} tokens • ${speed}${elapsed.toFixed(1)}s)...`;
+    const snippetSuffix = this.phaseSnippet ? `: "${this.phaseSnippet}"` : '';
+    this.statusText = `Generating (~${tokens} tokens • ${speed}${elapsed.toFixed(1)}s)${snippetSuffix}...`;
     if (this.isTTY && this.barDrawn) {
       this.updateStatusLineInPlace();
     }
@@ -1005,6 +1026,8 @@ export class BeurreWorkingBar {
     // A known tool has its own glyph from the caller; an unknown one gets a
     // neutral dot rather than a wrong icon.
     this.customIcon = label[name] ? '' : '●';
+    this.baseToolDetail = detail;
+    this.liveDetail = '';
     this.phaseDetail = detail;
     this.phaseStartTime = Date.now() - Math.round((elapsedSec ?? 0) * 1000);
     this.statusText = elapsedSec !== undefined && elapsedSec > 0
@@ -1015,17 +1038,36 @@ export class BeurreWorkingBar {
     }
   }
 
+  setLiveDetail(detail: string): void {
+    if (this.currentPhase === 'tool') {
+      const cleaned = detail.trim().split('\n')[0].slice(0, 35);
+      if (cleaned) {
+        this.liveDetail = cleaned;
+        this.phaseDetail = `${this.baseToolDetail} [${cleaned}]`;
+        this.statusText = `Executing ${this.phaseDetail}...`;
+        if (this.isTTY && this.barDrawn) {
+          this.updateStatusLineInPlace();
+        }
+      }
+    }
+  }
+
   writeAbove(text: string): void {
     if (!text) return;
     if (!this.isTTY) {
       process.stdout.write(text);
       return;
     }
-    const endsWithNewline = text.endsWith('\n');
-    const out = endsWithNewline ? text : text + '\n';
-    this.clearBar();
-    process.stdout.write(out);
-    this.renderInitialBar();
+    this.isRendering = true;
+    try {
+      const endsWithNewline = text.endsWith('\n');
+      const out = endsWithNewline ? text : text + '\n';
+      this.clearBar();
+      process.stdout.write(out);
+      this.renderInitialBar();
+    } finally {
+      this.isRendering = false;
+    }
   }
 
   writeToken(token: string): void {
@@ -1087,10 +1129,12 @@ export class BeurreWorkingBar {
   }
 
   private getCurrentFrame(): string {
+    const SHIMMER = [colors.butterGold, colors.butterPale, colors.butterGold, colors.butterMelt];
+    const tint = SHIMMER[this.spinnerIdx % SHIMMER.length];
     if (this.customIcon) {
-      return `${this.customIcon} ${colors.butterGold}${this.rawGlyphs[this.spinnerIdx] || '⠋'}${colors.reset}`;
+      return `${this.customIcon} ${tint}${this.rawGlyphs[this.spinnerIdx] || '⠋'}${colors.reset}`;
     }
-    return `${colors.butterGold}${this.frames[this.spinnerIdx]}${colors.reset}`;
+    return `${tint}${this.frames[this.spinnerIdx]}${colors.reset}`;
   }
 
   private renderInitialBar(): void {
@@ -1115,7 +1159,7 @@ export class BeurreWorkingBar {
   }
 
   private updateStatusLineInPlace(): void {
-    if (!this.barDrawn || !this.isTTY) return;
+    if (this.isRendering || !this.barDrawn || !this.isTTY) return;
     const cols = process.stdout.columns || 80;
     const lines = formatWorkingPromptBar({
       cols,
@@ -1135,7 +1179,7 @@ export class BeurreWorkingBar {
   }
 
   private updateInputLine(): void {
-    if (!this.barDrawn || !this.isTTY) return;
+    if (this.isRendering || !this.barDrawn || !this.isTTY) return;
     const cols = process.stdout.columns || 80;
     const lines = formatWorkingPromptBar({
       cols,
@@ -1155,7 +1199,7 @@ export class BeurreWorkingBar {
   }
 
   private updateFooterLine(): void {
-    if (!this.barDrawn || !this.isTTY) return;
+    if (this.isRendering || !this.barDrawn || !this.isTTY) return;
     const cols = process.stdout.columns || 80;
     const lines = formatWorkingPromptBar({
       cols,

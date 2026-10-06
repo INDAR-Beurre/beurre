@@ -528,19 +528,27 @@ export function detectTestCommand(cwd: string): string | null {
   if (testScript) {
     // Run the script's own command, not a hardcoded `npm test` — the script
     // may be `vitest run`, `bun test`, or `node --test`.
-    const runner = /bun\s+test/.test(testScript)
+    const runner = /bun\s+test/.test(testScript) || fs.existsSync(path.join(cwd, 'bun.lockb')) || fs.existsSync(path.join(cwd, 'bun.lock'))
       ? 'bun'
-      : /yarn\b/.test(testScript)
+      : /yarn\b/.test(testScript) || fs.existsSync(path.join(cwd, 'yarn.lock'))
         ? 'yarn'
-        : /pnpm\b/.test(testScript)
+        : /pnpm\b/.test(testScript) || fs.existsSync(path.join(cwd, 'pnpm-lock.yaml'))
           ? 'pnpm'
           : 'npm';
     return `${runner} test`;
   }
+  if (fs.existsSync(path.join(cwd, 'bun.lockb')) || fs.existsSync(path.join(cwd, 'bun.lock'))) return 'bun test';
   if (fs.existsSync(path.join(cwd, 'Cargo.toml'))) return 'cargo test';
   if (fs.existsSync(path.join(cwd, 'pyproject.toml')) || fs.existsSync(path.join(cwd, 'pytest.ini'))) return 'pytest';
   if (fs.existsSync(path.join(cwd, 'go.mod'))) return 'go test ./...';
-  if (fs.existsSync(path.join(cwd, 'build.gradle.kts'))) return './gradlew test';
+  if (fs.existsSync(path.join(cwd, 'build.gradle.kts')) || fs.existsSync(path.join(cwd, 'build.gradle'))) return './gradlew test';
+  if (fs.existsSync(path.join(cwd, 'deno.json')) || fs.existsSync(path.join(cwd, 'deno.jsonc'))) return 'deno test';
+  if (fs.existsSync(path.join(cwd, 'Makefile'))) {
+    try {
+      const makefile = fs.readFileSync(path.join(cwd, 'Makefile'), 'utf-8');
+      if (/^test\s*:/m.test(makefile)) return 'make test';
+    } catch {}
+  }
   return null;
 }
 

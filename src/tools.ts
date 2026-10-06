@@ -141,6 +141,21 @@ export const BEURRE_TOOLS: ToolDefinition[] = [
   },
 ];
 
+export function truncateLogOutput(text: string, headCount = 50, tailCount = 150): string {
+  const lines = text.split('\n');
+  if (lines.length <= headCount + tailCount) {
+    return text;
+  }
+  const head = lines.slice(0, headCount);
+  const tail = lines.slice(-tailCount);
+  const omitted = lines.length - headCount - tailCount;
+  return [
+    ...head,
+    `... [${omitted} lines omitted by Beurre tool manager] ...`,
+    ...tail,
+  ].join('\n');
+}
+
 export async function executeTool(
   toolCallId: string,
   name: string,
@@ -156,37 +171,76 @@ export async function executeTool(
         }
         const stat = fs.statSync(filePath);
         if (stat.isDirectory()) {
-          const files = fs.readdirSync(filePath);
+          const files = fs.readdirSync(filePath, { withFileTypes: true });
+          const entries = files.slice(0, 100).map((f) => {
+            const tag = f.isDirectory() ? '[dir]' : '[file]';
+            return `  - ${tag} ${f.name}`;
+          }).join('\n');
           return {
             tool_call_id: toolCallId,
             name,
-            output: `Directory: ${args.path}\nEntries:\n${files.slice(0, 100).map((f) => `  - ${f}`).join('\n')}`,
+            output: `Directory: ${args.path} (${files.length} items)\nEntries:\n${entries}${files.length > 100 ? `\n... (+${files.length - 100} more items)` : ''}`,
           };
         }
-        const content = fs.readFileSync(filePath, 'utf-8');
+        // Detect binary files by common extensions or null bytes in header
+        const ext = path.extname(filePath).toLowerCase();
+        const binaryExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.pdf', '.zip', '.tar', '.gz', '.wasm', '.node', '.exe', '.bin']);
+        if (binaryExts.has(ext)) {
+          return {
+            tool_call_id: toolCallId,
+            name,
+            output: `[Binary file: ${args.path} (${stat.size} bytes)]`,
+          };
+        }
+        const buf = fs.readFileSync(filePath);
+        const isBinary = buf.subarray(0, 4096).includes(0);
+        if (isBinary) {
+          return {
+            tool_call_id: toolCallId,
+            name,
+            output: `[Binary file: ${args.path} (${stat.size} bytes)]`,
+          };
+        }
+        const content = buf.toString('utf-8');
+        if (content.length === 0) {
+          return {
+            tool_call_id: toolCallId,
+            name,
+            output: `[File: ${args.path} (0 total lines)]\n(Empty file)`,
+          };
+        }
         const lines = content.split('\n');
+        const total = lines.length;
         const offset = Math.max(1, parseInt(args.offset, 10) || 1);
         const limit = Math.max(1, parseInt(args.limit, 10) || 200);
+        if (offset > total) {
+          return {
+            tool_call_id: toolCallId,
+            name,
+            output: `[File: ${args.path} (${total} total lines)]\n(Offset ${offset} exceeds total lines: ${total})`,
+          };
+        }
         const slice = lines.slice(offset - 1, offset - 1 + limit);
         const numbered = slice.map((l, i) => `${offset + i}: ${l}`).join('\n');
-        const total = lines.length;
         const msg = `[File: ${args.path} (${total} total lines)]\n${numbered}${offset - 1 + limit < total ? `\n... (${total - (offset - 1 + limit)} lines remaining)` : ''}`;
         return { tool_call_id: toolCallId, name, output: msg };
       }
 
       case 'write': {
+        const rawContent = args.content ?? args.text ?? args.code ?? '';
+        const content = typeof rawContent === 'string' ? rawContent : String(rawContent);
         const filePath = path.resolve(ctx.cwd, args.path);
         const dir = path.dirname(filePath);
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
         const prevContent = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : '';
-        fs.writeFileSync(filePath, args.content, 'utf-8');
-        const diffCard = generateDiffCard(prevContent, args.content, args.path);
+        fs.writeFileSync(filePath, content, 'utf-8');
+        const diffCard = generateDiffCard(prevContent, content, args.path);
         return {
           tool_call_id: toolCallId,
           name,
-          output: `Successfully wrote ${args.content.length} characters to ${args.path}`,
+          output: `Successfully wrote ${content.length} characters to ${args.path}`,
           diff: diffCard.hasChanges ? diffCard.formatted : undefined,
         };
       }
@@ -196,12 +250,62 @@ export async function executeTool(
         if (!fs.existsSync(filePath)) {
           return { tool_call_id: toolCallId, name, output: `Error: File not found: ${args.path}`, isError: true };
         }
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const { oldText, newText } = args;
+        const originalContent = fs.readFileSync(filePath, 'utf-8');
+        let content = originalContent;
+        let oldText = args.oldText ?? args.old_str ?? args.target;
+        let newText = args.newText ?? args.new_str ?? args.replacement ?? '';
         if (!oldText) {
           return { tool_call_id: toolCallId, name, output: 'Error: oldText is required for edit', isError: true };
         }
-        const count = content.split(oldText).length - 1;
+        let count = content.split(oldText).length - 1;
+        // Fallback for CRLF / LF line ending differences
+        if (count === 0 && oldText.includes('\n')) {
+          const normContent = content.replace(/\r\n/g, '\n');
+          const normOld = oldText.replace(/\r\n/g, '\n');
+          const normCount = normContent.split(normOld).length - 1;
+          if (normCount === 1) {
+            content = normContent;
+            oldText = normOld;
+            newText = newText.replace(/\r\n/g, '\n');
+            count = 1;
+          }
+        }
+        // Whitespace-tolerant fallback for trailing space or indentation variations
+        if (count === 0) {
+          const hasTrailingNewline = oldText.endsWith('\n');
+          const cleanOld = hasTrailingNewline ? oldText.slice(0, -1) : oldText;
+          const oldLines = cleanOld.split('\n');
+
+          const hasContentTrailingNewline = content.endsWith('\n');
+          const cleanContent = hasContentTrailingNewline ? content.slice(0, -1) : content;
+          const contentLines = cleanContent.split('\n');
+
+          if (oldLines.length > 0 && contentLines.length >= oldLines.length) {
+            const matchesFound: number[] = [];
+            for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+              let match = true;
+              for (let j = 0; j < oldLines.length; j++) {
+                if (contentLines[i + j].trim() !== oldLines[j].trim()) {
+                  match = false;
+                  break;
+                }
+              }
+              if (match) {
+                matchesFound.push(i);
+              }
+            }
+            if (matchesFound.length === 1) {
+              const startIdx = matchesFound[0];
+              const matchedOriginalChunk =
+                contentLines.slice(startIdx, startIdx + oldLines.length).join('\n') +
+                (hasTrailingNewline ? '\n' : '');
+              oldText = matchedOriginalChunk;
+              count = 1;
+            } else if (matchesFound.length > 1) {
+              count = matchesFound.length;
+            }
+          }
+        }
         if (count === 0) {
           return { tool_call_id: toolCallId, name, output: `Error: oldText was not found in ${args.path}`, isError: true };
         }
@@ -213,9 +317,12 @@ export async function executeTool(
             isError: true,
           };
         }
-        const updated = content.replace(oldText, newText ?? '');
+        let updated = content.replace(oldText, newText);
+        if (originalContent.includes('\r\n') && !updated.includes('\r\n')) {
+          updated = updated.replace(/\r?\n/g, '\r\n');
+        }
         fs.writeFileSync(filePath, updated, 'utf-8');
-        const diffCard = generateDiffCard(content, updated, args.path);
+        const diffCard = generateDiffCard(originalContent, updated, args.path);
         return {
           tool_call_id: toolCallId,
           name,
@@ -230,44 +337,110 @@ export async function executeTool(
         return await new Promise<ToolResult>((resolve) => {
           let stdout = '';
           let stderr = '';
+          let settled = false;
+
           const proc = spawn('bash', ['-c', command], {
             cwd: ctx.cwd,
             env: { ...process.env, PAGER: 'cat' },
+            detached: process.platform !== 'win32',
           });
 
-          let timer: Timer | null = setTimeout(() => {
-            proc.kill('SIGTERM');
+          const killProc = (sig: NodeJS.Signals = 'SIGTERM') => {
+            if (!proc.pid) return;
+            try {
+              if (process.platform !== 'win32') {
+                process.kill(-proc.pid, sig);
+              } else {
+                proc.kill(sig);
+              }
+            } catch {
+              try { proc.kill(sig); } catch {}
+            }
+          };
+
+          const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            killProc('SIGTERM');
+            setTimeout(() => {
+              killProc('SIGKILL');
+            }, 300);
+            const rawOutput = `Command cancelled by user.\nStdout:\n${stdout}\nStderr:\n${stderr}`;
             resolve({
               tool_call_id: toolCallId,
               name,
-              output: `Command timed out after ${timeout}ms\nStdout:\n${stdout}\nStderr:\n${stderr}`,
+              output: truncateLogOutput(rawOutput, 50, 150),
+              isError: true,
+            });
+          };
+
+          if (ctx.signal?.aborted) {
+            onAbort();
+            return;
+          }
+          ctx.signal?.addEventListener('abort', onAbort, { once: true });
+
+          let timer: Timer | null = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            ctx.signal?.removeEventListener('abort', onAbort);
+            killProc('SIGTERM');
+            setTimeout(() => {
+              killProc('SIGKILL');
+            }, 300);
+            const rawOutput = `Command timed out after ${timeout}ms\nStdout:\n${stdout}\nStderr:\n${stderr}`;
+            resolve({
+              tool_call_id: toolCallId,
+              name,
+              output: truncateLogOutput(rawOutput, 50, 150),
               isError: true,
             });
           }, timeout);
 
+          const MAX_BUFFER = 10 * 1024 * 1024;
+          let stdoutBytes = 0;
+          let stderrBytes = 0;
+
           proc.stdout?.on('data', (d) => {
-            stdout += d.toString();
-            ctx.onOutput?.(d.toString());
+            const str = d.toString();
+            stdoutBytes += d.length;
+            if (stdoutBytes < MAX_BUFFER) {
+              stdout += str;
+            }
+            ctx.onOutput?.(str);
           });
 
           proc.stderr?.on('data', (d) => {
-            stderr += d.toString();
-            ctx.onOutput?.(d.toString());
+            const str = d.toString();
+            stderrBytes += d.length;
+            if (stderrBytes < MAX_BUFFER) {
+              stderr += str;
+            }
+            ctx.onOutput?.(str);
           });
 
           proc.on('close', (code) => {
+            if (settled) return;
+            settled = true;
             if (timer) clearTimeout(timer);
-            const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : '');
+            ctx.signal?.removeEventListener('abort', onAbort);
+            const rawOutput = stdout + (stderr ? `\n[stderr]\n${stderr}` : '');
+            const trimmed = rawOutput.trim() || `(Process exited with code ${code})`;
+            const output = truncateLogOutput(trimmed, 50, 150);
             resolve({
               tool_call_id: toolCallId,
               name,
-              output: output.trim() || `(Process exited with code ${code})`,
+              output,
               isError: code !== 0,
             });
           });
 
           proc.on('error', (err) => {
+            if (settled) return;
+            settled = true;
             if (timer) clearTimeout(timer);
+            ctx.signal?.removeEventListener('abort', onAbort);
             resolve({
               tool_call_id: toolCallId,
               name,

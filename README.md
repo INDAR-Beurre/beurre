@@ -44,11 +44,26 @@
 
 ### Installation
 
-Beurre is already linked globally to `~/.bun/bin/beurre` and `~/.local/bin/beurre`:
+Install globally in a single command with **Bun**:
 
 ```bash
-# Launch interactive Butter REPL
-beurre
+bun add -g github:INDAR-Beurre/beurre
+```
+
+*(For private GitHub access without SSH keys, provide your auth token: `bun add -g "git+https://$(gh auth token)@github.com/INDAR-Beurre/beurre.git"`)*
+
+Or run directly without installing using `bunx`:
+
+```bash
+bunx github:INDAR-Beurre/beurre
+```
+
+Local development link:
+
+```bash
+# Link local working directory
+bun run link
+```
 
 # Or run headless tasks
 beurre "Check git status and summarize recent commits"
@@ -91,6 +106,7 @@ Within the interactive REPL (`beurre`):
 | `/providers` | View live upstream provider statuses |
 | `/model <id>` | Switch the active model on the fly |
 | `/effort` | Cycle the reasoning effort level |
+| `/boost` | Turbocharge reasoning to MAX effort with flagship models |
 | **Diagnostics** | |
 | `/doctor` | Check cwd, git, config, write access, width and colour |
 | `/history` | Alias for `/stats` |

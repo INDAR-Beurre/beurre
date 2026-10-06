@@ -6,6 +6,19 @@
   "bin": {
     "beurre": "./bin/beurre"
   },
+  "files": [
+    "bin",
+    "src",
+    "package.json",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/INDAR-Beurre/beurre.git"
+  },
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",

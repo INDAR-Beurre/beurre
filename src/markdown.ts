@@ -129,9 +129,18 @@ export function formatThinkingBlock(
     }
     let rest = raw;
     while (stringWidth(rest) > inner) {
-      const chunk = truncate(rest, inner);
-      wrapped.push(chunk.replace(/…$/, ''));
-      rest = rest.slice(stripAnsi(chunk).length);
+      let cut = 1;
+      while (cut <= rest.length && stringWidth(rest.slice(0, cut)) <= inner) {
+        cut++;
+      }
+      cut = Math.max(1, cut - 1);
+      // Word wrap: break at space if reasonable
+      const lastSpace = rest.slice(0, cut).lastIndexOf(' ');
+      if (lastSpace > Math.max(0, cut - 15)) {
+        cut = lastSpace + 1;
+      }
+      wrapped.push(rest.slice(0, cut).trimEnd());
+      rest = rest.slice(cut).trimStart();
     }
     wrapped.push(rest);
   }
@@ -184,6 +193,18 @@ export class StreamingMarkdownHighlighter {
           const highlighted = highlightCodeBlock(line, this.currentLang);
           this.onWrite(`${colors.butterCrust}│${colors.reset} ${highlighted[0] ?? line}\n`);
         }
+      }
+    }
+
+    // Dynamic progressive stream: If not in a code block and buffer exceeds wrap width,
+    // emit line at word boundary so users see real-time output rather than waiting for \n
+    if (!this.inCodeBlock && !this.buffer.startsWith('```') && this.buffer.length >= Math.max(40, this.cols - 10)) {
+      const wrapLimit = Math.max(30, this.cols - 8);
+      const spaceIdx = this.buffer.lastIndexOf(' ', wrapLimit);
+      if (spaceIdx > 15) {
+        const line = this.buffer.slice(0, spaceIdx);
+        this.buffer = this.buffer.slice(spaceIdx + 1);
+        this.onWrite(renderMarkdownBlock(line, { columns: this.cols }) + '\n');
       }
     }
   }

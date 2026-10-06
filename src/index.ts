@@ -26,6 +26,7 @@ ${b.bold('OPTIONS:')}
   -p, --prompt <string>      Run a prompt directly in headless mode
   -l, --loop [prompt]        Run in continuous repeating loop mode (indefinite)
   -m, --model <modelId>      Select model ID (e.g. glm-5-3-flash, kimi-k3:max)
+  -b, --boost                Run in Turbo Boost mode (max reasoning effort & flagship model)
   --models                   List live models available from the Relay Gateway
   --providers                Probe and list live upstream provider health
   --subagents                List native named subagents and their model personas
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
   let prompt: string | null = null;
   let isLoop = false;
   let selectedModel: string | undefined;
+  let selectedEffort: string | undefined;
   let maxIterations: number | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -124,6 +126,14 @@ async function main(): Promise<void> {
       continue;
     }
 
+    if (arg === '-b' || arg === '--boost') {
+      selectedEffort = 'max';
+      if (!selectedModel) {
+        selectedModel = 'kimi-k3:max';
+      }
+      continue;
+    }
+
     if (arg === '-p' || arg === '--prompt') {
       prompt = args[++i];
       continue;
@@ -148,7 +158,7 @@ async function main(): Promise<void> {
       console.error(`${b.red('Error:')} Loop mode requires a prompt. Example: beurre -p "Check tests" --loop`);
       process.exit(1);
     }
-    const agent = new BeurreAgent({ model: selectedModel });
+    const agent = new BeurreAgent({ model: selectedModel, effort: selectedEffort });
     const runner = new BeurreLoopRunner();
     await runner.start(agent, prompt, { maxIterations });
     return;
@@ -156,7 +166,7 @@ async function main(): Promise<void> {
 
   // If single headless prompt
   if (prompt) {
-    const agent = new BeurreAgent({ model: selectedModel });
+    const agent = new BeurreAgent({ model: selectedModel, effort: selectedEffort });
     console.log(`${b.gold('Beurre')} ${b.dim(`[${agent.getModel()}]`)}: Running task...`);
 
     const spinner = new ButterSpinner();
@@ -248,7 +258,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  await startRepl(selectedModel);
+  await startRepl(selectedModel, {
+    isBoosted: selectedEffort === 'max',
+    effort: selectedEffort,
+  });
 }
 
 /** Read all of stdin. Resolves to '' when stdin is a TTY or closed. */

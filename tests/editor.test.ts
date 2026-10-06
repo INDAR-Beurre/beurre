@@ -208,4 +208,12 @@ describe('BeurreEditor Engine', () => {
     const spaceRes = handleKeyStroke(downRes.state, ' ');
     expect(spaceRes.state.buffer).toBe(secondMatch.command + ' ');
   });
+
+  it('should discover directories and files in getFileMatches', () => {
+    const { getFileMatches } = require('../src/editor.ts');
+    const matches = getFileMatches('');
+    expect(matches.length).toBeGreaterThan(0);
+    const hasDir = matches.some((m: any) => m.isDir || m.path.endsWith('/'));
+    expect(hasDir).toBe(true);
+  });
 });

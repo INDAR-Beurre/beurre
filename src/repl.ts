@@ -158,7 +158,7 @@ import * as f4 from './features4.ts';
 // Every catch in this file only ever reads `.message`. Narrowing once here
 // replaces nine `catch (err: unknown)` sites with a sound type.
 const errorMessage = (err: unknown): string =>
-  err instanceof Error ? errorMessage(err) : String(err);
+  err instanceof Error ? err.message : String(err);
 
 export function copyToClipboard(text: string): boolean {
   try {
@@ -189,9 +189,61 @@ export function copyToClipboard(text: string): boolean {
   return true;
 }
 
-export async function startRepl(initialModel?: string): Promise<void> {
-  const agent = new BeurreAgent({ model: initialModel });
-  const editor = new BeurreEditor(['/menu', '/models', '/effort', '/copy', '/diff', '/subagents', '/loop', '/help']);
+export function resolveFileMentions(text: string, cwd: string): { expandedPrompt: string; attachedFiles: string[] } {
+  const atRegex = /(?:^|\s)@([a-zA-Z0-9_\-\.\/]+)/g;
+  let match: RegExpExecArray | null;
+  const attachedFiles: string[] = [];
+  const attachments: string[] = [];
+
+  while ((match = atRegex.exec(text)) !== null) {
+    const rawPath = match[1];
+    if (/^\d+\./.test(rawPath)) continue;
+    const resolvedPath = path.resolve(cwd, rawPath);
+    try {
+      if (fs.existsSync(resolvedPath)) {
+        const stat = fs.statSync(resolvedPath);
+        if (stat.isFile() && stat.size <= 50000 && !attachedFiles.includes(rawPath)) {
+          const buf = fs.readFileSync(resolvedPath);
+          const isBinary = buf.subarray(0, 512).includes(0);
+          if (!isBinary) {
+            attachedFiles.push(rawPath);
+            const content = buf.toString('utf-8');
+            const ext = path.extname(rawPath).slice(1) || 'txt';
+            attachments.push(`[Attached context from @${rawPath} (${stat.size} bytes)]:\n\`\`\`${ext}\n${content}\n\`\`\``);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (attachments.length > 0) {
+    return {
+      expandedPrompt: `${text}\n\n${attachments.join('\n\n')}`,
+      attachedFiles,
+    };
+  }
+
+  return { expandedPrompt: text, attachedFiles: [] };
+}
+
+export function selectFlagshipBoostModel(currentModel?: string): string {
+  if (currentModel && (currentModel.includes(':max') || currentModel.includes('opus') || currentModel.includes(':high'))) {
+    return currentModel;
+  }
+  return 'kimi-k3:max';
+}
+
+export interface StartReplOptions {
+  isBoosted?: boolean;
+  effort?: string;
+}
+
+export async function startRepl(initialModel?: string, options: StartReplOptions = {}): Promise<void> {
+  const isBoostedInit = Boolean(options.isBoosted);
+  const initialEffort = options.effort || (isBoostedInit ? 'max' : undefined);
+  const boostModel = isBoostedInit ? selectFlagshipBoostModel(initialModel) : initialModel;
+  const agent = new BeurreAgent({ model: boostModel, effort: initialEffort });
+  const editor = new BeurreEditor(['/menu', '/models', '/effort', '/boost', '/copy', '/diff', '/subagents', '/loop', '/help']);
 
   // Initial banner
   console.clear();
@@ -212,10 +264,13 @@ export async function startRepl(initialModel?: string): Promise<void> {
   let totalTokensEstimate = 0;
   const sessionStartedAt = Date.now();
   let turns = 0;
+  let isBoosted = isBoostedInit;
+  let autoCorrectionAttempts = 0;
+  let pendingTurn: string | null = null;
   let currentPermissions = loadPermissions();
   let currentTheme = loadTheme();
   let activeAbortController: AbortController | null = null;
-  let thinkingMode: 'expanded' | 'collapsed' | 'hidden' = 'expanded';
+  let thinkingMode: 'expanded' | 'collapsed' | 'hidden' = isBoostedInit ? 'expanded' : 'expanded';
   let lastReasoning = '';
   let lastAssistantResponse = '';
 
@@ -251,26 +306,35 @@ export async function startRepl(initialModel?: string): Promise<void> {
     const messages = agent.getMessages();
     const turnsCount = messages.filter((m) => m.role === 'user' || m.role === 'assistant').length;
 
-    const quotaText = currentUser.role === 'admin'
+    const baseQuota = currentUser.role === 'admin'
       ? '∞'
       : `${formatTokens(dailyTokensUsed)} / 50M`;
+    const quotaText = isBoosted
+      ? `${colors.butterGold}${colors.bold}⚡ TURBO BOOST ACTIVE${colors.reset}  •  ${baseQuota}`
+      : baseQuota;
 
     let rawInput = '';
-    try {
-      rawInput = await editor.readPrompt({
-        model: agent.getModel(),
-        cwd: agent.getCwd(),
-        turns: turnsCount,
-        tokens: totalTokensEstimate,
-        effort: agent.getEffort(),
-        quotaText,
-        user: currentUser.name,
-        onCycleEffort: (newEffort) => {
-          agent.setEffort(newEffort);
-        },
-      });
-    } catch {
-      break;
+    if (pendingTurn) {
+      rawInput = pendingTurn;
+      pendingTurn = null;
+    } else {
+      try {
+        rawInput = await editor.readPrompt({
+          model: agent.getModel(),
+          cwd: agent.getCwd(),
+          turns: turnsCount,
+          tokens: totalTokensEstimate,
+          effort: isBoosted ? '⚡ max' : agent.getEffort(),
+          quotaText,
+          user: currentUser.name,
+          onCycleEffort: (newEffort) => {
+            agent.setEffort(newEffort);
+            if (newEffort !== 'max') isBoosted = false;
+          },
+        });
+      } catch {
+        break;
+      }
     }
 
     let trimmed = rawInput.trim();
@@ -623,8 +687,54 @@ export async function startRepl(initialModel?: string): Promise<void> {
               console.log(`\n${b.red('Invalid effort:')} "${rest}". Choose from: ${valid.join(', ')}\n`);
             } else {
               agent.setEffort(chosen);
+              if (chosen !== 'max') isBoosted = false;
               console.log(`\n${renderToast(`Reasoning effort set to: ${chosen.toUpperCase()}`, true)}\n`);
             }
+          }
+          break;
+        }
+
+        case '/boost': {
+          const arg = rest.trim().toLowerCase();
+          if (arg === 'on') {
+            isBoosted = true;
+          } else if (arg === 'off') {
+            isBoosted = false;
+          } else if (!arg || arg === 'toggle') {
+            isBoosted = !isBoosted;
+          } else if (arg === 'status') {
+            // keep current boost state and show card below
+          } else {
+            // User provided a prompt: /boost <prompt>
+            isBoosted = true;
+            agent.setEffort('max');
+            thinkingMode = 'expanded';
+            agent.setModel(selectFlagshipBoostModel(agent.getModel()));
+            console.log(`\n${renderToast('⚡ TURBO BOOST ENGAGED for prompt (Effort: MAX • 64k Reasoning Budget)', true)}\n`);
+            runTurn = `[BOOST MODE: Maximize reasoning depth, execute step-by-step verification, and directly use tools to complete the task]\n\n${rest}`;
+            break;
+          }
+
+          if (isBoosted) {
+            agent.setEffort('max');
+            thinkingMode = 'expanded';
+            agent.setModel(selectFlagshipBoostModel(agent.getModel()));
+            console.log('\n' + box({
+              title: '⚡ BEURRE TURBO BOOST ENGAGED',
+              width: Math.min(termWidth(), 80),
+              lines: [
+                `${b.gold('Status:')}    ${b.green('● ACTIVE (Turbo Boost Mode)')}`,
+                `${b.gold('Model:')}     ${b.cream(getModelDisplayName(agent.getModel()))} (${agent.getModel()})`,
+                `${b.gold('Effort:')}    ${b.badge('MAX (64k Thinking Budget)')}`,
+                `${b.gold('Thinking:')}  ${b.cream('Expanded real-time reasoning trace')}`,
+                `${b.gold('Autonomy:')}  ${b.cream('Full filesystem writes, shell executions & auto-verification')}`,
+                '',
+                `  ${colors.dim}Run /boost off to disengage or press Shift+Tab to adjust effort.${colors.reset}`,
+              ],
+            }).join('\n') + '\n');
+          } else {
+            agent.setEffort('high');
+            console.log(`\n${renderToast('Boost mode disengaged. Reasoning effort reverted to HIGH.', true)}\n`);
           }
           break;
         }
@@ -633,7 +743,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
           if (!lastAssistantResponse) {
             console.log(`\n${renderToast('No assistant response to copy yet in this session.', false)}\n`);
           } else {
-            copyToClipboard(lastAssistantResponse);
+            copyToClipboard(stripAnsi(lastAssistantResponse));
             console.log(`\n${renderToast('Last assistant response copied to clipboard!', true)}\n`);
           }
           break;
@@ -641,11 +751,20 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
         case '/diff': {
           try {
-            const diffOutput = execSync('git diff HEAD 2>/dev/null', {
-              cwd: agent.getCwd(),
-              encoding: 'utf-8',
-              timeout: 5000,
-            }).trim();
+            let diffOutput = '';
+            try {
+              diffOutput = execSync('git diff HEAD 2>/dev/null', {
+                cwd: agent.getCwd(),
+                encoding: 'utf-8',
+                timeout: 5000,
+              }).trim();
+            } catch {
+              diffOutput = execSync('git diff 2>/dev/null || git status -s 2>/dev/null', {
+                cwd: agent.getCwd(),
+                encoding: 'utf-8',
+                timeout: 5000,
+              }).trim();
+            }
             if (!diffOutput) {
               console.log(`\n${renderToast('No git changes in working tree (clean repository)', true)}\n`);
             } else {
@@ -717,7 +836,16 @@ export async function startRepl(initialModel?: string): Promise<void> {
             console.log(`\n${renderToast('No user interaction turns to undo.', false)}\n`);
           } else {
             const removedCount = msgs.length - lastUserIdx;
-            agent.setMessages(msgs.slice(0, lastUserIdx));
+            const newHistory = msgs.slice(0, lastUserIdx);
+            agent.setMessages(newHistory);
+            turns = Math.max(0, turns - 1);
+            totalTokensEstimate = Math.round(newHistory.reduce((acc, m) => acc + (m.content?.length || 0), 0) / 4);
+            saveCloudSession({
+              id: agent.getSessionId(),
+              title: newHistory.filter((m) => m.role === 'user').pop()?.content?.slice(0, 60) || 'Session',
+              model: agent.getModel(),
+              history: newHistory,
+            }).catch(() => {});
             console.log(`\n${renderToast(`Reverted last turn (${removedCount} messages removed)`, true)}\n`);
           }
           break;
@@ -764,7 +892,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
             const nodes = files.flatMap((f) => outlineFile(f));
             console.log(`\n${renderOutline(nodes, contentWidth()).join('\n')}\n`);
           } catch (err: unknown) {
-            console.log(`\n${renderErrorCard('Outline failed', err instanceof Error ? errorMessage(err) : String(err))}\n`);
+            console.log(`\n${renderErrorCard('Outline failed', errorMessage(err))}\n`);
           }
           break;
         }
@@ -1362,13 +1490,21 @@ export async function startRepl(initialModel?: string): Promise<void> {
       trimmed += `\n\n[hook] ${promptHook.output.trim()}`;
     }
 
+    // Resolve @file mentions in prompt and attach content
+    const mentionResult = resolveFileMentions(trimmed, agent.getCwd());
+    const promptToRun = mentionResult.expandedPrompt;
+    if (mentionResult.attachedFiles.length > 0) {
+      const fileNames = mentionResult.attachedFiles.map((f) => colors.bold + f + colors.reset).join(', ');
+      console.log(`\n  ${colors.butterGold}📎 [Context]${colors.reset} Attached referenced files: ${fileNames}\n`);
+    }
+
     // Normal Turn Execution with Streaming, Thinking Blocks, Diffs & Clean Error Recovery
     console.log(formatUserMessageCard(trimmed));
 
     activeAbortController = new AbortController();
     const workingBar = new BeurreWorkingBar({
       model: agent.getModel(),
-      effort: agent.getEffort(),
+      effort: isBoosted ? '⚡ max' : agent.getEffort(),
       cwd: agent.getCwd(),
       user: currentUser.name,
       quotaText,
@@ -1390,6 +1526,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
       },
       onCycleEffort: (newEffort: string) => {
         agent.setEffort(newEffort);
+        if (newEffort !== 'max') isBoosted = false;
       },
       onCancel: () => {
         activeAbortController?.abort();
@@ -1406,6 +1543,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
     let firstTokenTime = 0;
     let streamedTokenCount = 0;
     let toolStartTime = 0;
+    let modifiedFilesThisTurn = false;
 
     const streamHighlighter = new StreamingMarkdownHighlighter({
       onWrite: (chunk) => workingBar.writeAbove(chunk),
@@ -1424,7 +1562,7 @@ export async function startRepl(initialModel?: string): Promise<void> {
 
     try {
       await agent.runTurn(
-        trimmed,
+        promptToRun,
         {
           onStatus: (st) => workingBar.update(st),
           onReasoning: (res) => {
@@ -1433,9 +1571,13 @@ export async function startRepl(initialModel?: string): Promise<void> {
             if (!hasStartedTokenStream) {
               const elapsed = (Date.now() - thinkingStartTime) / 1000;
               const tokenEst = Math.round(accumulatedReasoning.length / 4);
-              const snippet = accumulatedReasoning.trim().replace(/\s+/g, ' ').slice(0, 35);
+              const clean = accumulatedReasoning.trim().replace(/\s+/g, ' ');
+              const snippet = clean.length > 40 ? clean.slice(-40) : clean;
               workingBar.setThinking(tokenEst, elapsed, snippet);
             }
+          },
+          onToolOutput: (chunk) => {
+            workingBar.setLiveDetail(chunk);
           },
           onToken: (tok) => {
             if (!firstTokenTime) {
@@ -1465,6 +1607,9 @@ export async function startRepl(initialModel?: string): Promise<void> {
             workingBar.setTool(name, args);
           },
           onToolEnd: (name, output, isError, diff) => {
+            if (!isError && (name === 'write' || name === 'edit')) {
+              modifiedFilesThisTurn = true;
+            }
             const elapsedMs = toolStartTime > 0 ? Date.now() - toolStartTime : 0;
             if (diff) {
               workingBar.writeAbove('\n' + diff + '\n');
@@ -1513,6 +1658,32 @@ export async function startRepl(initialModel?: string): Promise<void> {
         console.log(`\n${speedBadge}\n`);
       } else {
         workingBar.stop();
+      }
+
+      // Autonomous Verification Loop (Turbo Boost Mode)
+      if (isBoosted && !activeAbortController.signal.aborted && modifiedFilesThisTurn) {
+        if (autoCorrectionAttempts < 3) {
+          const testCmd = detectTestCommand(agent.getCwd());
+          if (testCmd) {
+            console.log(`\n${colors.butterGold}${colors.bold}⚡ [TURBO BOOST AUTO-VERIFY]${colors.reset} Running test verification: ${colors.bold}${testCmd}${colors.reset}...`);
+            const spinner = new ButterSpinner();
+            spinner.start(`Verifying tests with ${testCmd}…`);
+            const { code, tail } = await runTestCommand(testCmd, { cwd: agent.getCwd() });
+            spinner.stop();
+            if (code === 0) {
+              console.log('\n' + renderToast(`⚡ Turbo Verification Passed: 0 failures across all tests!`, true) + '\n');
+              autoCorrectionAttempts = 0;
+            } else {
+              autoCorrectionAttempts++;
+              console.log('\n' + renderToast(`⚡ Turbo Verification Failed (exit ${code}). Launching auto-correction turn (${autoCorrectionAttempts}/3)...`, false) + '\n');
+              console.log(renderTestResult(code, tail, contentWidth()) + '\n');
+              pendingTurn = `[TURBO BOOST AUTO-CORRECTION (${autoCorrectionAttempts}/3): The verification test command \`${testCmd}\` failed with exit code ${code}. Below is the failure tail output. Diagnose the exact failure, modify the source files to fix the error, and ensure all tests pass.]\n\n${tail}`;
+            }
+          }
+        } else {
+          console.log(`\n${renderToast(`⚡ Turbo Verification: Maximum auto-correction attempts reached (3/3). Handing control back to user.`, false)}\n`);
+          autoCorrectionAttempts = 0;
+        }
       }
     } catch (err: unknown) {
       workingBar.stop();

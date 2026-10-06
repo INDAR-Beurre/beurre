@@ -75,6 +75,7 @@ export class BeurreLoopRunner {
             this.abortController?.abort();
           },
         });
+        const iterationStartTime = Date.now();
         activeWorkingBar = workingBar;
         workingBar.start(`Iteration #${this.currentIteration} executing...`);
 
@@ -94,10 +95,15 @@ export class BeurreLoopRunner {
               onReasoning: (reasoning) => {
                 accumulatedReasoning += reasoning;
                 if (!hasTokens) {
+                  const elapsed = (Date.now() - iterationStartTime) / 1000;
                   const tokenEst = Math.round(accumulatedReasoning.length / 4);
-                  const snippet = accumulatedReasoning.trim().replace(/\s+/g, ' ').slice(0, 35);
-                  workingBar.setThinking(tokenEst, 0, snippet);
+                  const clean = accumulatedReasoning.trim().replace(/\s+/g, ' ');
+                  const snippet = clean.length > 40 ? clean.slice(-40) : clean;
+                  workingBar.setThinking(tokenEst, elapsed, snippet);
                 }
+              },
+              onToolOutput: (chunk) => {
+                workingBar.setLiveDetail(chunk);
               },
               onToken: (tok) => {
                 if (!hasTokens) {

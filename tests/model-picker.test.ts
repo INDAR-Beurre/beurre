@@ -1,7 +1,53 @@
 import { describe, it, expect } from 'bun:test';
 import { filterModelList, renderModelList } from '../src/model-picker.ts';
 import { stripAnsi, stringWidth } from '../src/layout.ts';
-import type { RelayModel } from '../src/relay.ts';
+import { getModelDisplayName, toRelayModel, type RelayModel } from '../src/relay.ts';
+
+describe('toRelayModel (raw /v1/models view)', () => {
+  it('keeps the provider on the id and lifts the relay metadata', () => {
+    const m = toRelayModel({
+      id: 'yjs/glm-5-3-flash',
+      owned_by: 'yjs',
+      relay: {
+        provider: 'yjs',
+        id: 'glm-5-3-flash',
+        name: 'GLM 5.3 Flash',
+        context: 200000,
+        max_output: 128000,
+        reasoning: true,
+        reasoning_efforts: ['low', 'high'],
+      },
+    });
+    expect(m?.id).toBe('yjs/glm-5-3-flash');
+    expect(m?.owned_by).toBe('yjs');
+    expect(m?.name).toBe('GLM 5.3 Flash');
+    expect(m?.context_length).toBe(200000);
+    expect(m?.max_completion_tokens).toBe(128000);
+    expect(m?.reasoning).toBe(true);
+    expect(m?.reasoning_efforts).toEqual(['low', 'high']);
+  });
+
+  it('does not double-prefix a provider already inside the id', () => {
+    const m = toRelayModel({ id: 'kria/bytedance/seedance-2-mini', relay: { provider: 'kria', id: 'bytedance/seedance-2-mini' } });
+    expect(m?.id).toBe('kria/bytedance/seedance-2-mini');
+  });
+
+  it('drops a row with no usable id', () => {
+    expect(toRelayModel({ relay: {} })).toBeNull();
+  });
+});
+
+describe('getModelDisplayName', () => {
+  it('drops the provider segment before matching a known display name', () => {
+    // "glm-5-3-flash" is in KNOWN_MODEL_NAMES, so the provider-qualified id must
+    // resolve to it instead of title-casing "yjs/glm-5-3-flash" whole.
+    expect(getModelDisplayName('yjs/glm-5-3-flash')).toBe('GLM 5.3 Flash');
+  });
+
+  it('prefers the catalog display name when the list carries one', () => {
+    expect(getModelDisplayName('yjs/glm-5-3-flash', [{ id: 'yjs/glm-5-3-flash', name: 'GLM 5.3 Flash' }])).toBe('GLM 5.3 Flash');
+  });
+});
 
 const model = (id: string, over: Partial<RelayModel> = {}): RelayModel =>
   ({ id, context_length: 128000, owned_by: 'acme', ...over }) as RelayModel;

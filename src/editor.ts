@@ -1,8 +1,12 @@
 import readline from 'node:readline';
-import { colors, b, getGitStatus } from './theme.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execSync } from 'node:child_process';
+import { colors, b, getGitStatus, banner } from './theme.ts';
 import { SLASH_COMMANDS, getPredictiveMatches, type SlashCommandInfo } from './predictive.ts';
 import { getModelDisplayName } from './relay.ts';
 import { columns, fit, padTo, stringWidth, truncate } from './layout.ts';
+import { BEURRE_VERSION } from './config.ts';
 
 export interface EditorPromptOptions {
   promptText?: string;
@@ -24,6 +28,81 @@ export interface EditorCoords {
   lineIdx: number;
   colIdx: number;
   lines: string[];
+}
+
+export interface FileMatchInfo {
+  path: string;
+  isDir?: boolean;
+}
+
+const workspaceFilesCache = new Map<string, { files: string[]; timestamp: number }>();
+
+export function getWorkspaceFiles(cwd = process.cwd()): string[] {
+  const now = Date.now();
+  const cached = workspaceFilesCache.get(cwd);
+  if (cached && now - cached.timestamp < 5000) {
+    return cached.files;
+  }
+  const fileSet = new Set<string>();
+  try {
+    const gitFiles = execSync('git ls-files --cached --others --exclude-standard 2>/dev/null', { cwd, encoding: 'utf-8', timeout: 800 }).split('\n');
+    for (const f of gitFiles) {
+      const trimmed = f.trim();
+      if (trimmed && !trimmed.startsWith('.git/')) {
+        fileSet.add(trimmed);
+        // Discover directory prefixes
+        const parts = trimmed.split('/');
+        for (let i = 1; i < parts.length; i++) {
+          fileSet.add(parts.slice(0, i).join('/') + '/');
+        }
+      }
+    }
+  } catch {}
+
+  if (fileSet.size === 0) {
+    const walk = (dir: string, depth: number) => {
+      if (depth > 3) return;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist' || e.name === 'target') continue;
+          const rel = path.relative(cwd, path.join(dir, e.name));
+          if (e.isDirectory()) {
+            fileSet.add(rel + '/');
+            walk(path.join(dir, e.name), depth + 1);
+          } else {
+            fileSet.add(rel);
+          }
+        }
+      } catch {}
+    };
+    walk(cwd, 0);
+  }
+
+  const files = Array.from(fileSet);
+  workspaceFilesCache.set(cwd, { files, timestamp: now });
+  return files;
+}
+
+export function getFileMatches(query: string, cwd = process.cwd()): FileMatchInfo[] {
+  const files = getWorkspaceFiles(cwd);
+  const q = query.toLowerCase().trim();
+  if (!q) {
+    return files.slice(0, 10).map((f) => ({ path: f, isDir: f.endsWith('/') }));
+  }
+  const prefixMatches: string[] = [];
+  const subMatches: string[] = [];
+  for (const f of files) {
+    const lower = f.toLowerCase();
+    if (lower.startsWith(q)) {
+      prefixMatches.push(f);
+    } else if (lower.includes(q)) {
+      subMatches.push(f);
+    }
+  }
+  return [...prefixMatches, ...subMatches]
+    .slice(0, 10)
+    .map((f) => ({ path: f, isDir: f.endsWith('/') }));
 }
 
 export function getBuffer2DCoords(buffer: string, cursor: number): EditorCoords {
@@ -93,26 +172,65 @@ export interface EditorState {
   savedDraft: string;
   autocompleteMatches: SlashCommandInfo[];
   selectedAutocompleteIdx: number;
+  fileMatches?: FileMatchInfo[];
+  selectedFileIdx?: number;
+  isSearchingHistory?: boolean;
+  historySearchQuery?: string;
+  historySearchMatches?: string[];
+  historySearchMatchIdx?: number;
   inPasteMode: boolean;
   pasteBuffer: string;
 }
 
+export function syncSuggestions(s: EditorState): void {
+  if (s.buffer.startsWith('/')) {
+    s.autocompleteMatches = getPredictiveMatches(s.buffer);
+    s.fileMatches = undefined;
+    s.selectedFileIdx = 0;
+    return;
+  }
+  s.autocompleteMatches = [];
+
+  // Check for @ file mentions
+  const beforeCursor = s.buffer.slice(0, s.cursor);
+  const atIdx = beforeCursor.lastIndexOf('@');
+  if (atIdx >= 0) {
+    if (atIdx === 0 || /\s/.test(beforeCursor[atIdx - 1])) {
+      const query = beforeCursor.slice(atIdx + 1);
+      if (!/\s/.test(query)) {
+        const matches = getFileMatches(query);
+        if (matches.length > 0) {
+          s.fileMatches = matches;
+          if (s.selectedFileIdx === undefined || s.selectedFileIdx >= matches.length) {
+            s.selectedFileIdx = 0;
+          }
+          return;
+        }
+      }
+    }
+  }
+  s.fileMatches = undefined;
+  s.selectedFileIdx = 0;
+}
+
 export function createInitialEditorState(initialValue = '', historyLength = 0): EditorState {
-  return {
+  const s: EditorState = {
     buffer: initialValue,
     cursor: initialValue.length,
     historyPos: historyLength,
     savedDraft: initialValue,
-    autocompleteMatches: initialValue.startsWith('/') ? getPredictiveMatches(initialValue) : [],
+    autocompleteMatches: [],
     selectedAutocompleteIdx: 0,
     inPasteMode: false,
     pasteBuffer: '',
   };
+  syncSuggestions(s);
+  return s;
 }
 
 export interface KeyResult {
   state: EditorState;
-  action: 'none' | 'submit' | 'abort' | 'exit' | 'effort_cycle';
+  action: 'none' | 'submit' | 'abort' | 'exit' | 'effort_cycle' | 'clear_screen';
   submittedValue?: string;
 }
 
@@ -136,11 +254,7 @@ export function handleKeyStroke(
       s.cursor += pastedContent.length;
       s.inPasteMode = false;
       s.pasteBuffer = '';
-      if (s.buffer.startsWith('/')) {
-        s.autocompleteMatches = getPredictiveMatches(s.buffer);
-      } else {
-        s.autocompleteMatches = [];
-      }
+      syncSuggestions(s);
       return { state: s, action: 'none' };
     } else {
       s.pasteBuffer = remaining;
@@ -158,16 +272,130 @@ export function handleKeyStroke(
       s.cursor += pastedContent.length;
       s.inPasteMode = false;
       s.pasteBuffer = '';
-      if (s.buffer.startsWith('/')) {
-        s.autocompleteMatches = getPredictiveMatches(s.buffer);
-      } else {
-        s.autocompleteMatches = [];
-      }
+      syncSuggestions(s);
       return { state: s, action: 'none' };
     } else {
       s.pasteBuffer += keyStr;
       return { state: s, action: 'none' };
     }
+  }
+
+  // History search mode (Ctrl+R interactive reverse-i-search)
+  if (s.isSearchingHistory) {
+    if (keyStr === '\x12') {
+      // Ctrl+R again: cycle to next matching history item
+      const matches = s.historySearchMatches || [];
+      if (matches.length > 0) {
+        s.historySearchMatchIdx = ((s.historySearchMatchIdx ?? 0) + 1) % matches.length;
+      }
+      return { state: s, action: 'none' };
+    }
+    if (keyStr === '\x1b[A') {
+      // Up arrow: previous match
+      const matches = s.historySearchMatches || [];
+      if (matches.length > 0) {
+        s.historySearchMatchIdx = (s.historySearchMatchIdx ?? 0) <= 0 ? matches.length - 1 : (s.historySearchMatchIdx ?? 0) - 1;
+      }
+      return { state: s, action: 'none' };
+    }
+    if (keyStr === '\x1b[B') {
+      // Down arrow: next match
+      const matches = s.historySearchMatches || [];
+      if (matches.length > 0) {
+        s.historySearchMatchIdx = ((s.historySearchMatchIdx ?? 0) + 1) % matches.length;
+      }
+      return { state: s, action: 'none' };
+    }
+    if (keyStr === '\x1b[D' || keyStr === '\x1b[C') {
+      // Left/Right arrow: accept match and place cursor for editing
+      const match = s.historySearchMatches?.[s.historySearchMatchIdx ?? 0];
+      if (match) {
+        s.buffer = match;
+        s.cursor = keyStr === '\x1b[D' ? Math.max(0, match.length - 1) : match.length;
+      } else {
+        s.buffer = s.savedDraft;
+        s.cursor = s.savedDraft.length;
+      }
+      s.isSearchingHistory = false;
+      s.historySearchMatches = undefined;
+      syncSuggestions(s);
+      return { state: s, action: 'none' };
+    }
+    if (keyStr === '\r' || keyStr === '\n' || keyStr === '\t') {
+      // Enter or Tab: accept selected history match (or restore draft if none)
+      const match = s.historySearchMatches?.[s.historySearchMatchIdx ?? 0];
+      if (match) {
+        s.buffer = match;
+        s.cursor = match.length;
+      } else {
+        s.buffer = s.savedDraft;
+        s.cursor = s.savedDraft.length;
+      }
+      s.isSearchingHistory = false;
+      s.historySearchMatches = undefined;
+      syncSuggestions(s);
+      return { state: s, action: 'none' };
+    }
+    if (keyStr === '\x1b' || keyStr === '\x07' || keyStr === '\x03') {
+      // Esc, Ctrl+G, or Ctrl+C: cancel search and restore draft
+      s.buffer = s.savedDraft;
+      s.cursor = s.savedDraft.length;
+      s.isSearchingHistory = false;
+      s.historySearchMatches = undefined;
+      syncSuggestions(s);
+      return { state: s, action: 'none' };
+    }
+    if (keyStr === '\x7f' || keyStr === '\x08') {
+      // Backspace in search
+      const curQ = s.historySearchQuery || '';
+      s.historySearchQuery = curQ.slice(0, -1);
+      const q = s.historySearchQuery.toLowerCase();
+      s.historySearchMatches = history.filter((h) => h.toLowerCase().includes(q)).reverse();
+      s.historySearchMatchIdx = 0;
+      return { state: s, action: 'none' };
+    }
+    if (!keyStr.startsWith('\x1b') && keyStr.length >= 1 && keyStr.charCodeAt(0) >= 32) {
+      s.historySearchQuery = (s.historySearchQuery || '') + keyStr;
+      const q = s.historySearchQuery.toLowerCase();
+      s.historySearchMatches = history.filter((h) => h.toLowerCase().includes(q)).reverse();
+      s.historySearchMatchIdx = 0;
+      return { state: s, action: 'none' };
+    }
+    return { state: s, action: 'none' };
+  }
+
+  // Ctrl+R trigger
+  if (keyStr === '\x12') {
+    s.isSearchingHistory = true;
+    s.savedDraft = s.buffer;
+    s.historySearchQuery = '';
+    s.historySearchMatches = [...history].reverse().filter((h) => h.trim().length > 0);
+    s.historySearchMatchIdx = 0;
+    return { state: s, action: 'none' };
+  }
+
+  // Ctrl+L: clear screen
+  if (keyStr === '\x0c') {
+    return { state: s, action: 'clear_screen' };
+  }
+
+  // Alt+D: delete word right
+  if (keyStr === '\x1bd') {
+    const nextBoundary = findWordBoundaryRight(s.buffer, s.cursor);
+    s.buffer = s.buffer.slice(0, s.cursor) + s.buffer.slice(nextBoundary);
+    syncSuggestions(s);
+    return { state: s, action: 'none' };
+  }
+
+  // Ctrl+T: transpose characters
+  if (keyStr === '\x14') {
+    if (s.cursor >= 2) {
+      const c1 = s.buffer[s.cursor - 2];
+      const c2 = s.buffer[s.cursor - 1];
+      s.buffer = s.buffer.slice(0, s.cursor - 2) + c2 + c1 + s.buffer.slice(s.cursor);
+      syncSuggestions(s);
+    }
+    return { state: s, action: 'none' };
   }
 
   // Shift+Tab effort slider (\x1b[Z backtab, \x1b[27;2;9~, \x1b[9;2u)
@@ -177,6 +405,10 @@ export function handleKeyStroke(
 
   // Ctrl+C
   if (keyStr === '\x03') {
+    if (s.fileMatches && s.fileMatches.length > 0) {
+      s.fileMatches = undefined;
+      return { state: s, action: 'none' };
+    }
     if (s.autocompleteMatches.length > 0) {
       s.autocompleteMatches = [];
       return { state: s, action: 'none' };
@@ -185,6 +417,7 @@ export function handleKeyStroke(
       s.buffer = '';
       s.cursor = 0;
       s.autocompleteMatches = [];
+      s.fileMatches = undefined;
       return { state: s, action: 'none' };
     }
     return { state: s, action: 'abort' };
@@ -198,9 +431,7 @@ export function handleKeyStroke(
     // Delete char under cursor
     if (s.cursor < s.buffer.length) {
       s.buffer = s.buffer.slice(0, s.cursor) + s.buffer.slice(s.cursor + 1);
-      if (s.buffer.startsWith('/')) {
-        s.autocompleteMatches = getPredictiveMatches(s.buffer);
-      }
+      syncSuggestions(s);
     }
     return { state: s, action: 'none' };
   }
@@ -211,15 +442,37 @@ export function handleKeyStroke(
     s.buffer = s.buffer.slice(0, s.cursor) + '\n' + s.buffer.slice(s.cursor);
     s.cursor++;
     s.autocompleteMatches = [];
+    s.fileMatches = undefined;
     return { state: s, action: 'none' };
   }
 
   // Standard Enter (\r or \n)
   if (keyStr === '\r' || keyStr === '\n') {
+    // If selecting file mention
+    if (s.fileMatches && s.fileMatches.length > 0) {
+      const chosen = s.fileMatches[s.selectedFileIdx ?? 0];
+      if (chosen) {
+        const atIdx = s.buffer.lastIndexOf('@', s.cursor - 1);
+        if (atIdx >= 0) {
+          const isDir = chosen.isDir || chosen.path.endsWith('/');
+          const suffix = isDir ? '' : ' ';
+          s.buffer = s.buffer.slice(0, atIdx) + '@' + chosen.path + suffix + s.buffer.slice(s.cursor);
+          s.cursor = atIdx + 1 + chosen.path.length + suffix.length;
+          if (isDir) {
+            syncSuggestions(s);
+          } else {
+            s.fileMatches = undefined;
+          }
+          return { state: s, action: 'none' };
+        }
+      }
+    }
+
     // If user ended line with backslash '\', turn it into a newline
     if (s.cursor > 0 && s.buffer[s.cursor - 1] === '\\') {
       s.buffer = s.buffer.slice(0, s.cursor - 1) + '\n' + s.buffer.slice(s.cursor);
       s.autocompleteMatches = [];
+      s.fileMatches = undefined;
       return { state: s, action: 'none' };
     }
 
@@ -263,6 +516,26 @@ export function handleKeyStroke(
 
   // Tab
   if (keyStr === '\t') {
+    // If selecting file mention
+    if (s.fileMatches && s.fileMatches.length > 0) {
+      const chosen = s.fileMatches[s.selectedFileIdx ?? 0];
+      if (chosen) {
+        const atIdx = s.buffer.lastIndexOf('@', s.cursor - 1);
+        if (atIdx >= 0) {
+          const isDir = chosen.isDir || chosen.path.endsWith('/');
+          const suffix = isDir ? '' : ' ';
+          s.buffer = s.buffer.slice(0, atIdx) + '@' + chosen.path + suffix + s.buffer.slice(s.cursor);
+          s.cursor = atIdx + 1 + chosen.path.length + suffix.length;
+          if (isDir) {
+            syncSuggestions(s);
+          } else {
+            s.fileMatches = undefined;
+          }
+          return { state: s, action: 'none' };
+        }
+      }
+    }
+
     // Same guard as Enter/Space: never clobber arguments already typed.
     if (!s.buffer.includes(' ') && s.autocompleteMatches.length > 0 && s.selectedAutocompleteIdx >= 0) {
       const selected = s.autocompleteMatches[s.selectedAutocompleteIdx];
@@ -286,6 +559,10 @@ export function handleKeyStroke(
 
   // Escape
   if (keyStr === '\x1b') {
+    if (s.fileMatches && s.fileMatches.length > 0) {
+      s.fileMatches = undefined;
+      return { state: s, action: 'none' };
+    }
     if (s.autocompleteMatches.length > 0) {
       s.autocompleteMatches = [];
       return { state: s, action: 'none' };
@@ -298,6 +575,13 @@ export function handleKeyStroke(
 
   // Up arrow: \x1b[A
   if (keyStr === '\x1b[A') {
+    if (s.fileMatches && s.fileMatches.length > 0) {
+      s.selectedFileIdx = (s.selectedFileIdx ?? 0) <= 0
+        ? s.fileMatches.length - 1
+        : (s.selectedFileIdx ?? 0) - 1;
+      return { state: s, action: 'none' };
+    }
+
     if (s.autocompleteMatches.length > 0) {
       s.selectedAutocompleteIdx =
         s.selectedAutocompleteIdx <= 0
@@ -320,17 +604,34 @@ export function handleKeyStroke(
       s.historyPos--;
       s.buffer = history[s.historyPos];
       s.cursor = s.buffer.length;
-      if (s.buffer.startsWith('/')) {
-        s.autocompleteMatches = getPredictiveMatches(s.buffer);
-      } else {
-        s.autocompleteMatches = [];
-      }
+      syncSuggestions(s);
     }
     return { state: s, action: 'none' };
   }
 
+  // PageUp in autocomplete: \x1b[5~
+  if (keyStr === '\x1b[5~') {
+    if (s.autocompleteMatches.length > 0) {
+      s.selectedAutocompleteIdx = Math.max(0, s.selectedAutocompleteIdx - 8);
+      return { state: s, action: 'none' };
+    }
+  }
+
+  // PageDown in autocomplete: \x1b[6~
+  if (keyStr === '\x1b[6~') {
+    if (s.autocompleteMatches.length > 0) {
+      s.selectedAutocompleteIdx = Math.min(s.autocompleteMatches.length - 1, s.selectedAutocompleteIdx + 8);
+      return { state: s, action: 'none' };
+    }
+  }
+
   // Down arrow: \x1b[B
   if (keyStr === '\x1b[B') {
+    if (s.fileMatches && s.fileMatches.length > 0) {
+      s.selectedFileIdx = ((s.selectedFileIdx ?? 0) + 1) % s.fileMatches.length;
+      return { state: s, action: 'none' };
+    }
+
     if (s.autocompleteMatches.length > 0) {
       s.selectedAutocompleteIdx =
         (s.selectedAutocompleteIdx + 1) % s.autocompleteMatches.length;
@@ -352,11 +653,7 @@ export function handleKeyStroke(
         s.buffer = history[s.historyPos];
       }
       s.cursor = s.buffer.length;
-      if (s.buffer.startsWith('/')) {
-        s.autocompleteMatches = getPredictiveMatches(s.buffer);
-      } else {
-        s.autocompleteMatches = [];
-      }
+      syncSuggestions(s);
     }
     return { state: s, action: 'none' };
   }
@@ -424,11 +721,7 @@ export function handleKeyStroke(
     const newCursor = findWordBoundaryLeft(s.buffer, s.cursor);
     s.buffer = s.buffer.slice(0, newCursor) + s.buffer.slice(s.cursor);
     s.cursor = newCursor;
-    if (s.buffer.startsWith('/')) {
-      s.autocompleteMatches = getPredictiveMatches(s.buffer);
-    } else {
-      s.autocompleteMatches = [];
-    }
+    syncSuggestions(s);
     return { state: s, action: 'none' };
   }
 
@@ -438,11 +731,7 @@ export function handleKeyStroke(
     const lineStart = getCursorFrom2DCoords(coords.lines, coords.lineIdx, 0);
     s.buffer = s.buffer.slice(0, lineStart) + s.buffer.slice(s.cursor);
     s.cursor = lineStart;
-    if (s.buffer.startsWith('/')) {
-      s.autocompleteMatches = getPredictiveMatches(s.buffer);
-    } else {
-      s.autocompleteMatches = [];
-    }
+    syncSuggestions(s);
     return { state: s, action: 'none' };
   }
 
@@ -452,11 +741,7 @@ export function handleKeyStroke(
     const lineLen = coords.lines[coords.lineIdx]?.length ?? 0;
     const lineEnd = getCursorFrom2DCoords(coords.lines, coords.lineIdx, lineLen);
     s.buffer = s.buffer.slice(0, s.cursor) + s.buffer.slice(lineEnd);
-    if (s.buffer.startsWith('/')) {
-      s.autocompleteMatches = getPredictiveMatches(s.buffer);
-    } else {
-      s.autocompleteMatches = [];
-    }
+    syncSuggestions(s);
     return { state: s, action: 'none' };
   }
 
@@ -465,11 +750,7 @@ export function handleKeyStroke(
     if (s.cursor > 0) {
       s.buffer = s.buffer.slice(0, s.cursor - 1) + s.buffer.slice(s.cursor);
       s.cursor--;
-      if (s.buffer.startsWith('/')) {
-        s.autocompleteMatches = getPredictiveMatches(s.buffer);
-      } else {
-        s.autocompleteMatches = [];
-      }
+      syncSuggestions(s);
     }
     return { state: s, action: 'none' };
   }
@@ -478,11 +759,7 @@ export function handleKeyStroke(
   if (keyStr === '\x1b[3~') {
     if (s.cursor < s.buffer.length) {
       s.buffer = s.buffer.slice(0, s.cursor) + s.buffer.slice(s.cursor + 1);
-      if (s.buffer.startsWith('/')) {
-        s.autocompleteMatches = getPredictiveMatches(s.buffer);
-      } else {
-        s.autocompleteMatches = [];
-      }
+      syncSuggestions(s);
     }
     return { state: s, action: 'none' };
   }
@@ -492,11 +769,7 @@ export function handleKeyStroke(
     const normalized = keyStr.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     s.buffer = s.buffer.slice(0, s.cursor) + normalized + s.buffer.slice(s.cursor);
     s.cursor += normalized.length;
-    if (s.buffer.startsWith('/')) {
-      s.autocompleteMatches = getPredictiveMatches(s.buffer);
-    } else {
-      s.autocompleteMatches = [];
-    }
+    syncSuggestions(s);
     return { state: s, action: 'none' };
   }
 
@@ -504,11 +777,7 @@ export function handleKeyStroke(
   if (!keyStr.startsWith('\x1b') && keyStr.length >= 1) {
     s.buffer = s.buffer.slice(0, s.cursor) + keyStr + s.buffer.slice(s.cursor);
     s.cursor += keyStr.length;
-    if (s.buffer.startsWith('/')) {
-      s.autocompleteMatches = getPredictiveMatches(s.buffer);
-    } else {
-      s.autocompleteMatches = [];
-    }
+    syncSuggestions(s);
     return { state: s, action: 'none' };
   }
 
@@ -556,7 +825,17 @@ export class BeurreEditor {
       // Enable bracketed paste mode
       stdout.write('\x1b[?2004h');
 
+      const onResize = () => {
+        render();
+      };
+      if (stdout.on) {
+        stdout.on('resize', onResize);
+      }
+
       const cleanup = () => {
+        if (stdout.removeListener) {
+          stdout.removeListener('resize', onResize);
+        }
         stdout.write('\x1b[?2004l');
         stdin.removeListener('data', onData);
         if (!wasRaw) {
@@ -615,7 +894,26 @@ export class BeurreEditor {
         let targetRow = 0;
         let targetCol = 1;
 
-        if (isMultiLine) {
+        if (state.isSearchingHistory) {
+          drawnLines.push(`${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`);
+          const q = state.historySearchQuery || '';
+          const matches = state.historySearchMatches || [];
+          const matchIdx = state.historySearchMatchIdx ?? 0;
+          const currMatch = matches[matchIdx] ?? '';
+          const countInfo = matches.length > 0 ? ` [${matchIdx + 1}/${matches.length}]` : ' [0/0]';
+          const searchLine = `${colors.butterGold}(reverse-i-search)\`${colors.bold}${colors.white}${q}${colors.reset}${colors.butterGold}\`${colors.dim}${countInfo}:${colors.reset} ${colors.white}${currMatch}${colors.reset}`;
+          drawnLines.push(truncate(searchLine, cols));
+          drawnLines.push(`${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`);
+          const modelName = options.model ? getModelDisplayName(options.model) : 'Beurre';
+          const statusRow = columns(
+            `${colors.dim}Enter/Tab accept  •  Ctrl+R next  •  Esc cancel${colors.reset}`,
+            modelName,
+            cols,
+          );
+          drawnLines.push(statusRow);
+          targetRow = 1;
+          targetCol = Math.min(cols, 19 + stringWidth(q));
+        } else if (isMultiLine) {
           const maxLineNumDigits = lines.length.toString().length;
           const headerTitle = ` Multi-line Prompt (Shift+Enter newline • Enter send) `;
           const topFill = Math.max(0, cols - headerTitle.length - 3);
@@ -633,7 +931,7 @@ export class BeurreEditor {
 
           drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(cols - 2)}╯${colors.reset}`);
           targetRow = 1 + coords.lineIdx;
-          targetCol = 2 + maxLineNumDigits + 3 + 2 + coords.colIdx;
+          targetCol = 2 + maxLineNumDigits + 3 + 2 + stringWidth((lines[coords.lineIdx] ?? '').slice(0, coords.colIdx));
         } else {
           // OMP / Claude Code Prompt Bar with top line, input line, divider, and bottom status bar
           drawnLines.push(`${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`);
@@ -648,9 +946,35 @@ export class BeurreEditor {
             const hint = stringWidth(full) <= avail ? full : 'Type a prompt or / for commands';
             const placeholder = `${colors.darkGray}${truncate(hint, avail)}${colors.reset}`;
             drawnLines.push(`${promptPrefix}${placeholder}`);
+            targetRow = 1;
+            targetCol = 3;
           } else {
-            const ghost = `${colors.dim}${ghostText}${colors.reset}`;
-            drawnLines.push(`${promptPrefix}${colors.bold}${colors.white}${state.buffer}${colors.reset}${ghost}`);
+            const maxTextCols = Math.max(5, cols - 4);
+            const cur = Math.max(0, Math.min(coords.colIdx, state.buffer.length));
+            const buf = state.buffer;
+            let displayBuf = buf;
+            let visualCol = stringWidth(buf.slice(0, cur));
+
+            if (stringWidth(buf) > maxTextCols) {
+              if (cur < maxTextCols - 1) {
+                displayBuf = buf.slice(0, maxTextCols - 1) + '…';
+                visualCol = stringWidth(buf.slice(0, cur));
+              } else if (cur > buf.length - (maxTextCols - 1)) {
+                const startIdx = buf.length - (maxTextCols - 1);
+                displayBuf = '…' + buf.slice(startIdx);
+                visualCol = 1 + stringWidth(buf.slice(startIdx, cur));
+              } else {
+                const windowSize = maxTextCols - 2;
+                const startIdx = cur - Math.floor(windowSize / 2);
+                const endIdx = startIdx + windowSize;
+                displayBuf = '…' + buf.slice(startIdx, endIdx) + '…';
+                visualCol = 1 + stringWidth(buf.slice(startIdx, cur));
+              }
+            }
+            const ghost = stringWidth(buf) <= maxTextCols ? `${colors.dim}${ghostText}${colors.reset}` : '';
+            drawnLines.push(truncate(`${promptPrefix}${colors.bold}${colors.white}${displayBuf}${colors.reset}${ghost}`, cols));
+            targetRow = 1;
+            targetCol = Math.max(3, Math.min(cols, 3 + visualCol));
           }
 
           drawnLines.push(`${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`);
@@ -679,9 +1003,6 @@ export class BeurreEditor {
             return columns(`${colors.dim}${short.join(' • ')}${colors.reset}`, rightStatus, cols);
           };
           drawnLines.push(hintFor(cols));
-
-          targetRow = 1;
-          targetCol = 3 + coords.colIdx;
 
           // Autocomplete floating box with smooth scrolling
           if (state.autocompleteMatches.length > 0) {
@@ -741,6 +1062,51 @@ export class BeurreEditor {
               drawnLines.push(formatBoxLine(truncate(`    ${colors.dim}▼ ${remaining} more below${colors.reset}`, inner), colors.mutedBox));
             }
             drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(Math.max(0, cols - 2))}╯${colors.reset}`);
+          } else if (state.fileMatches && state.fileMatches.length > 0) {
+            const maxDisplay = 8;
+            const totalFiles = state.fileMatches.length;
+            let scrollOffset = 0;
+            const selIdx = state.selectedFileIdx ?? 0;
+            if (selIdx >= maxDisplay) {
+              scrollOffset = selIdx - maxDisplay + 1;
+            }
+            if (scrollOffset > totalFiles - maxDisplay) {
+              scrollOffset = Math.max(0, totalFiles - maxDisplay);
+            }
+
+            const visibleFiles = state.fileMatches.slice(scrollOffset, scrollOffset + maxDisplay);
+            const inner = Math.max(12, cols - 2);
+            const countTag = ` [${selIdx + 1}/${totalFiles}]`;
+            const head = truncate(
+              `${colors.mutedBox}╭─${colors.reset} ${colors.bold}Files${colors.reset}${colors.dim}${countTag}${colors.reset}`,
+              inner,
+            );
+            const headerRow = Math.max(0, inner - stringWidth(head) - 1);
+            drawnLines.push(`${head} ${colors.mutedBox}${'─'.repeat(headerRow)}╮${colors.reset}`);
+
+            const labelCol = Math.min(
+              Math.max(12, ...visibleFiles.map((f) => stringWidth(f.path) + 3)),
+              Math.floor((inner - 2) / 2),
+            );
+            const descCol = Math.max(4, cols - 8 - labelCol);
+            visibleFiles.forEach((f, idx) => {
+              const actualIdx = scrollOffset + idx;
+              const isSelected = actualIdx === selIdx;
+              const pointer = isSelected ? `${colors.butterGold}❯${colors.reset}` : ' ';
+              const icon = f.isDir ? '📁 ' : '📄 ';
+              const text = isSelected
+                ? `${colors.bold}${colors.butterGold}${f.path}${colors.reset}`
+                : `${colors.butterCream}${f.path}${colors.reset}`;
+              const label = padTo(`${icon}${text}`, labelCol);
+              const tag = f.isDir ? `${colors.dim}directory${colors.reset}` : `${colors.dim}file${colors.reset}`;
+              drawnLines.push(formatBoxLine(`  ${pointer} ${label}  ${truncate(tag, descCol)}`, colors.mutedBox));
+            });
+
+            if (scrollOffset + maxDisplay < totalFiles) {
+              const remaining = totalFiles - (scrollOffset + maxDisplay);
+              drawnLines.push(formatBoxLine(truncate(`    ${colors.dim}▼ ${remaining} more below${colors.reset}`, inner), colors.mutedBox));
+            }
+            drawnLines.push(`${colors.mutedBox}╰${'─'.repeat(Math.max(0, cols - 2))}╯${colors.reset}`);
           }
         }
 
@@ -768,6 +1134,15 @@ export class BeurreEditor {
         const str = chunk.toString('utf-8');
         const res = handleKeyStroke(state, str, this.history);
         state = res.state;
+
+        if (res.action === 'clear_screen') {
+          stdout.write('\x1b[2J\x1b[H');
+          stdout.write(banner(BEURRE_VERSION, options.model || 'glm-5-3-flash', process.cwd(), currentEffort) + '\n\n');
+          lastRenderedLinesCount = 0;
+          lastCursorRow = 0;
+          render();
+          return;
+        }
 
         if (res.action === 'effort_cycle') {
           const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
