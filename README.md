@@ -44,15 +44,26 @@
 
 ### Installation
 
-Install globally in a single command with **Bun**:
+#### ⚡ Universal 1-Line Install (macOS, Linux & WSL)
+No manual setup required. Installs Bun automatically if missing, sets up PATH, and configures Beurre:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/INDAR-Beurre/beurre/main/install.sh | bash
+```
+
+#### 🪟 Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/INDAR-Beurre/beurre/main/install.ps1 | iex
+```
+
+#### 🍞 With Bun Directly
+If you already have Bun installed:
 
 ```bash
 bun add -g github:INDAR-Beurre/beurre
 ```
 
-*(For private GitHub access without SSH keys, provide your auth token: `bun add -g "git+https://$(gh auth token)@github.com/INDAR-Beurre/beurre.git"`)*
-
-Or run directly without installing using `bunx`:
+Or run instantly on-the-fly without global installation:
 
 ```bash
 bunx github:INDAR-Beurre/beurre
