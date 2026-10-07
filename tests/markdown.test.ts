@@ -20,7 +20,7 @@ describe('Markdown & Code Highlighting Engine', () => {
     expect(lines.length).toBe(2);
     // Should contain keyword highlighting and comment formatting
     expect(lines[0]).toContain('port');
-    expect(lines[1]).toContain('// server port');
+    expect(stripAnsi(lines[1])).toContain('// server port');
   });
 
   it('should format thinking block in expanded mode', () => {

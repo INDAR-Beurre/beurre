@@ -46,7 +46,7 @@ export function highlightCodeBlock(code: string, lang = ''): string[] {
 }
 
 export function renderMarkdownBlock(text: string, options: MarkdownOptions = {}): string {
-  const cols = options.columns || Math.min(process.stdout.columns || 80, 80);
+  const cols = options.columns || Math.max(20, process.stdout.columns || 80);
 
   // If text contains code fences, render code blocks with butter headers
   const fenceRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
@@ -59,7 +59,7 @@ export function renderMarkdownBlock(text: string, options: MarkdownOptions = {})
     if (preText.trim()) {
       try {
         const md = new Markdown(preText.trim(), 0, 0, getMarkdownTheme());
-        parts.push(md.render(cols).join('\n'));
+        parts.push(md.render(cols).map((l) => l.trimEnd()).join('\n'));
       } catch {
         parts.push(preText.trim());
       }
@@ -87,7 +87,7 @@ export function renderMarkdownBlock(text: string, options: MarkdownOptions = {})
   if (remaining.trim()) {
     try {
       const md = new Markdown(remaining.trim(), 0, 0, getMarkdownTheme());
-      parts.push(md.render(cols).join('\n'));
+      parts.push(md.render(cols).map((l) => l.trimEnd()).join('\n'));
     } catch {
       parts.push(remaining.trim());
     }
@@ -102,7 +102,7 @@ export function formatThinkingBlock(
   cols?: number,
   durationStr?: string
 ): string {
-  const width = cols || Math.min(process.stdout.columns || 80, 80);
+  const width = cols || Math.max(20, process.stdout.columns || 80);
   const trimmed = thinking.trim();
   if (!trimmed) return '';
 
@@ -156,7 +156,7 @@ export class StreamingMarkdownHighlighter {
   private onWrite: (chunk: string) => void;
 
   constructor(options: { columns?: number; onWrite?: (chunk: string) => void } = {}) {
-    this.cols = options.columns || Math.min(process.stdout.columns || 80, 80);
+    this.cols = options.columns || Math.max(20, process.stdout.columns || 80);
     this.onWrite = options.onWrite || ((chunk: string) => process.stdout.write(chunk));
   }
 

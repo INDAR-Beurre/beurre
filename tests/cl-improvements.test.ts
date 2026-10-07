@@ -1,11 +1,11 @@
 import { describe, expect, it, afterAll } from 'bun:test';
 import { executeTool, truncateLogOutput } from '../src/tools.ts';
-import { relay } from '../src/relay.ts';
+import { relay, isModelErrorContent } from '../src/relay.ts';
 import { handleKeyStroke, createInitialEditorState, getFileMatches } from '../src/editor.ts';
 import { selectFlagshipBoostModel, resolveFileMentions } from '../src/repl.ts';
 import { detectTestCommand } from '../src/features.ts';
 import { stringWidth } from '../src/layout.ts';
-import { formatThinkingBlock } from '../src/markdown.ts';
+import { formatThinkingBlock, renderMarkdownBlock } from '../src/markdown.ts';
 import { BeurreWorkingBar, formatToolResult } from '../src/theme.ts';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -478,6 +478,98 @@ describe('CLI Improvements & Robustness Engine', () => {
       fs.mkdirSync(makeDir, { recursive: true });
       fs.writeFileSync(path.join(makeDir, 'Makefile'), 'test:\n\techo "testing"\n');
       expect(detectTestCommand(makeDir)).toBe('make test');
+    });
+
+    it('should accurately discriminate provider protocol errors from normal error explanations', () => {
+      // Real provider error chunks
+      expect(isModelErrorContent('[Error: 403 USER_BLOCKED]')).toBe(true);
+      expect(isModelErrorContent('{"error":{"message":"Rate limit exceeded"}}')).toBe(true);
+      expect(isModelErrorContent('Provider rejected: insufficient quota')).toBe(true);
+      expect(isModelErrorContent('Error: [USER_BLOCKED] account suspended')).toBe(true);
+
+      // Normal programming explanations discussing errors MUST NOT trigger failover
+      expect(isModelErrorContent("Error: Cannot find module 'express'")).toBe(false);
+      expect(isModelErrorContent('Error: Expected 2 arguments, but got 1.')).toBe(false);
+      expect(isModelErrorContent('When the server is overloaded, requests queue up.')).toBe(false);
+      expect(isModelErrorContent('This function catches any Error thrown by fetch.')).toBe(false);
+    });
+
+    it('should support steering history recall with Up/Down arrows and restore draft in BeurreWorkingBar', () => {
+      const bar = new BeurreWorkingBar({
+        model: 'glm-5-3-flash',
+        history: ['first steering prompt', 'second steering prompt'],
+      });
+
+      // Type a draft
+      bar.handleInput('my active draft');
+      expect(bar.getInputBuffer()).toBe('my active draft');
+
+      // Up arrow recalls last history item
+      bar.handleInput('\x1b[A');
+      expect(bar.getInputBuffer()).toBe('second steering prompt');
+
+      // Up arrow again recalls earlier item
+      bar.handleInput('\x1b[A');
+      expect(bar.getInputBuffer()).toBe('first steering prompt');
+
+      // Down arrow moves forward
+      bar.handleInput('\x1b[B');
+      expect(bar.getInputBuffer()).toBe('second steering prompt');
+
+      // Down arrow again restores the draft
+      bar.handleInput('\x1b[B');
+      expect(bar.getInputBuffer()).toBe('my active draft');
+
+      bar.stop();
+    });
+
+    it('should support word navigation with Alt+Left and Alt+Right in BeurreWorkingBar', () => {
+      const bar = new BeurreWorkingBar({ model: 'glm-5-3-flash' });
+      bar.setInputBuffer('fix the compiler errors');
+      expect(bar.getCursor()).toBe(23);
+
+      // Alt+Left jumps left to start of 'errors'
+      bar.handleInput('\x1bb');
+      expect(bar.getCursor()).toBe(17);
+
+      // Alt+Left jumps left to start of 'compiler'
+      bar.handleInput('\x1b[1;3D');
+      expect(bar.getCursor()).toBe(8);
+
+      // Alt+Right jumps right to start of 'errors'
+      bar.handleInput('\x1b[1;3C');
+      expect(bar.getCursor()).toBe(17);
+
+      bar.stop();
+    });
+
+    it('should support SS3 arrow keys in BeurreEditor', () => {
+      let state = createInitialEditorState('hello world', 0);
+      expect(state.cursor).toBe(11);
+
+      // SS3 Left (\x1bOD)
+      let res = handleKeyStroke(state, '\x1bOD');
+      expect(res.state.cursor).toBe(10);
+
+      // SS3 Right (\x1bOC)
+      res = handleKeyStroke(res.state, '\x1bOC');
+      expect(res.state.cursor).toBe(11);
+
+      // SS3 Home (\x1bOH)
+      res = handleKeyStroke(res.state, '\x1bOH');
+      expect(res.state.cursor).toBe(0);
+
+      // SS3 End (\x1bOF)
+      res = handleKeyStroke(res.state, '\x1bOF');
+      expect(res.state.cursor).toBe(11);
+    });
+
+    it('should strip trailing spaces from rendered markdown lines to prevent auto-wrap', () => {
+      const rendered = renderMarkdownBlock('Simple short line', { columns: 80 });
+      const lines = rendered.split('\n');
+      for (const line of lines) {
+        expect(line.endsWith('   ')).toBe(false);
+      }
     });
   });
 });

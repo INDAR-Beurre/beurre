@@ -226,9 +226,16 @@ export function resolveFileMentions(text: string, cwd: string): { expandedPrompt
   return { expandedPrompt: text, attachedFiles: [] };
 }
 
-export function selectFlagshipBoostModel(currentModel?: string): string {
+export function selectFlagshipBoostModel(currentModel?: string, availableModels?: string[]): string {
   if (currentModel && (currentModel.includes(':max') || currentModel.includes('opus') || currentModel.includes(':high'))) {
     return currentModel;
+  }
+  if (availableModels && availableModels.length > 0) {
+    if (availableModels.includes('kimi-k3:max')) return 'kimi-k3:max';
+    if (availableModels.includes('vsllm/qwen3.8-max-0902')) return 'vsllm/qwen3.8-max-0902';
+    const foundFlagship = availableModels.find((m) => m.includes(':max') || m.includes('opus') || m.includes(':high'));
+    if (foundFlagship) return foundFlagship;
+    return availableModels[0];
   }
   return 'kimi-k3:max';
 }
@@ -267,6 +274,7 @@ export async function startRepl(initialModel?: string, options: StartReplOptions
   let isBoosted = isBoostedInit;
   let autoCorrectionAttempts = 0;
   let pendingTurn: string | null = null;
+  let userFacingPrompt: string | null = null;
   let currentPermissions = loadPermissions();
   let currentTheme = loadTheme();
   let activeAbortController: AbortController | null = null;
@@ -711,6 +719,7 @@ export async function startRepl(initialModel?: string, options: StartReplOptions
             thinkingMode = 'expanded';
             agent.setModel(selectFlagshipBoostModel(agent.getModel()));
             console.log(`\n${renderToast('⚡ TURBO BOOST ENGAGED for prompt (Effort: MAX • 64k Reasoning Budget)', true)}\n`);
+            userFacingPrompt = rest;
             runTurn = `[BOOST MODE: Maximize reasoning depth, execute step-by-step verification, and directly use tools to complete the task]\n\n${rest}`;
             break;
           }
@@ -1498,8 +1507,14 @@ export async function startRepl(initialModel?: string, options: StartReplOptions
       console.log(`\n  ${colors.butterGold}📎 [Context]${colors.reset} Attached referenced files: ${fileNames}\n`);
     }
 
+    const cardPrompt = userFacingPrompt
+      ? `${userFacingPrompt}  ${colors.butterGold}[⚡ BOOSTED]${colors.reset}`
+      : trimmed;
+    const sessionTitle = userFacingPrompt || trimmed;
+    userFacingPrompt = null;
+
     // Normal Turn Execution with Streaming, Thinking Blocks, Diffs & Clean Error Recovery
-    console.log(formatUserMessageCard(trimmed));
+    console.log(formatUserMessageCard(cardPrompt));
 
     activeAbortController = new AbortController();
     const workingBar = new BeurreWorkingBar({
@@ -1510,18 +1525,20 @@ export async function startRepl(initialModel?: string, options: StartReplOptions
       quotaText,
       turns: turnsCount,
       tokens: totalTokensEstimate,
+      history: editor.getHistory(),
       onSteer: (message: string) => {
         if (hasStartedTokenStream) {
           streamHighlighter.flush();
           workingBar.writeAbove('\n');
           hasStartedTokenStream = false;
         }
-        workingBar.writeAbove(formatUserMessageCard(message));
+        workingBar.writeAbove(`\n${colors.butterGold}${colors.bold}⤹ [Steered Agent]:${colors.reset} ${colors.bold}${colors.white}${message}${colors.reset}\n`);
         accumulatedReasoning = '';
         thinkingBlockRendered = false;
         thinkingStartTime = Date.now();
         firstTokenTime = 0;
         streamedTokenCount = 0;
+        workingBar.update('Steering agent with message...');
         agent.steer(message);
       },
       onCycleEffort: (newEffort: string) => {
@@ -1592,7 +1609,8 @@ export async function startRepl(initialModel?: string, options: StartReplOptions
             accumulatedResponse += tok;
             const durationSec = (Date.now() - firstTokenTime) / 1000;
             const tokPerSec = durationSec > 0 ? (streamedTokenCount / durationSec) : 0;
-            workingBar.setGenerating(streamedTokenCount, tokPerSec, durationSec);
+            const snippet = accumulatedResponse.slice(-35).trim().replace(/\s+/g, ' ');
+            workingBar.setGenerating(streamedTokenCount, tokPerSec, durationSec, snippet);
             streamHighlighter.feed(tok);
           },
           onToolStart: (name, args) => {
@@ -1642,7 +1660,7 @@ export async function startRepl(initialModel?: string, options: StartReplOptions
       // Auto-sync session turns to Supabase cloud store
       saveCloudSession({
         id: agent.getSessionId(),
-        title: trimmed.slice(0, 60),
+        title: sessionTitle.slice(0, 60),
         model: agent.getModel(),
         history: agent.getMessages(),
       }).catch(() => {});

@@ -155,7 +155,7 @@ export const LOGO_GUTTER = 3 + Math.max(...BUTTER_MARK.map((r) => stringWidth(r)
  * real terminal width, so this is safe at 40 columns.
  */
 export function banner(version = BEURRE_VERSION, model = 'glm-5-3-flash', cwd = process.cwd(), effort = 'high'): string {
-  const width = Math.min(termWidth(), 100);
+  const width = Math.max(20, termWidth());
   const git = getGitStatus(cwd);
   const gitTag = git.branch ? `  ${git.branch}${git.isDirty ? '*' : ''}` : '';
   const modelName = getModelDisplayName(model);
@@ -341,7 +341,7 @@ export function formatToolCall(name: string, args: Record<string, unknown>, dura
 }
 
 export function formatToolResult(output: string, isError = false, durationMs?: number): string {
-  const cols = Math.min(process.stdout.columns || 80, 100);
+  const cols = Math.max(20, process.stdout.columns || 80);
   const icon = isError ? `${colors.red}✖ Error: ${colors.reset}` : `${colors.green}└─ ✔ ${colors.reset}`;
   const firstLine = output.trim().split('\n')[0] || '(empty)';
   const remaining = output.trim().split('\n').length - 1;
@@ -424,6 +424,7 @@ export interface WorkingBarRenderOptions {
   inputBuffer?: string;
   cursor?: number;
   placeholder?: string;
+  history?: string[];
   onSteer?: (message: string) => void;
   onCycleEffort?: (newEffort: string) => void;
   onCancel?: () => void;
@@ -431,7 +432,7 @@ export interface WorkingBarRenderOptions {
 
 export function formatWorkingPromptBar(options: WorkingBarRenderOptions = {}): string[] {
   const terminalCols = options.cols || (process.stdout.columns || 80);
-  const cols = Math.max(20, Math.min(terminalCols, 100));
+  const cols = Math.max(20, terminalCols);
   const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
   const frame = options.spinnerFrame || `${colors.butterGold}⠋${colors.reset}`;
@@ -628,6 +629,10 @@ export class BeurreWorkingBar {
   private placeholder = 'Type a message to steer agent (Esc to cancel)...';
   private inPaste = false;
   private pasteBuffer = '';
+  private history: string[] = [];
+  private historyPos = 0;
+  private savedDraft = '';
+  private lastStatusUpdateTime = 0;
 
   // Active phase tracking for live dynamic progression
   private currentPhase: 'idle' | 'status' | 'thinking' | 'generating' | 'tool' = 'status';
@@ -642,6 +647,8 @@ export class BeurreWorkingBar {
 
   constructor(options: WorkingBarRenderOptions = {}) {
     this.options = { ...options };
+    this.history = options.history ? [...options.history] : [];
+    this.historyPos = this.history.length;
     this.onResizeBound = () => this.handleResize();
   }
 
@@ -670,7 +677,7 @@ export class BeurreWorkingBar {
   }
 
   getCursorCol(cols = process.stdout.columns || 80): number {
-    const effectiveCols = Math.max(10, Math.min(cols, 100));
+    const effectiveCols = Math.max(10, cols);
     if (!this.inputBuffer || this.inputBuffer.length === 0) {
       return 3;
     }
@@ -760,6 +767,8 @@ export class BeurreWorkingBar {
     if (keyStr === '\r' || keyStr === '\n') {
       const msg = this.inputBuffer.trim();
       if (msg.length > 0) {
+        this.history.push(msg);
+        this.historyPos = this.history.length;
         this.inputBuffer = '';
         this.cursor = 0;
         this.updateInputLine();
@@ -777,6 +786,55 @@ export class BeurreWorkingBar {
       this.options.effort = nextEffort;
       this.options.onCycleEffort?.(nextEffort);
       this.updateFooterLine();
+      return;
+    }
+
+    // Up Arrow (\x1b[A or \x1bOA) -> navigate steering history
+    if (keyStr === '\x1b[A' || keyStr === '\x1bOA') {
+      if (this.history.length > 0 && this.historyPos > 0) {
+        if (this.historyPos === this.history.length) {
+          this.savedDraft = this.inputBuffer;
+        }
+        this.historyPos--;
+        this.inputBuffer = this.history[this.historyPos];
+        this.cursor = this.inputBuffer.length;
+        this.updateInputLine();
+      }
+      return;
+    }
+
+    // Down Arrow (\x1b[B or \x1bOB) -> navigate steering history
+    if (keyStr === '\x1b[B' || keyStr === '\x1bOB') {
+      if (this.historyPos < this.history.length) {
+        this.historyPos++;
+        if (this.historyPos === this.history.length) {
+          this.inputBuffer = this.savedDraft;
+        } else {
+          this.inputBuffer = this.history[this.historyPos];
+        }
+        this.cursor = this.inputBuffer.length;
+        this.updateInputLine();
+      }
+      return;
+    }
+
+    // Word left: Alt+Left / Ctrl+Left (\x1b[1;3D, \x1b[1;5D, \x1bb)
+    if (keyStr === '\x1b[1;3D' || keyStr === '\x1b[1;5D' || keyStr === '\x1bb') {
+      let idx = this.cursor;
+      while (idx > 0 && /\s/.test(this.inputBuffer[idx - 1])) idx--;
+      while (idx > 0 && !/\s/.test(this.inputBuffer[idx - 1])) idx--;
+      this.cursor = idx;
+      this.updateCursorPos();
+      return;
+    }
+
+    // Word right: Alt+Right / Ctrl+Right (\x1b[1;3C, \x1b[1;5C, \x1bf)
+    if (keyStr === '\x1b[1;3C' || keyStr === '\x1b[1;5C' || keyStr === '\x1bf') {
+      let idx = this.cursor;
+      while (idx < this.inputBuffer.length && !/\s/.test(this.inputBuffer[idx])) idx++;
+      while (idx < this.inputBuffer.length && /\s/.test(this.inputBuffer[idx])) idx++;
+      this.cursor = idx;
+      this.updateCursorPos();
       return;
     }
 
@@ -817,15 +875,15 @@ export class BeurreWorkingBar {
       return;
     }
 
-    // Home (\x1b[H, \x1b[1~, \x01)
-    if (keyStr === '\x1b[H' || keyStr === '\x1b[1~' || keyStr === '\x01') {
+    // Home (\x1b[H, \x1bOH, \x1b[1~, \x01)
+    if (keyStr === '\x1b[H' || keyStr === '\x1bOH' || keyStr === '\x1b[1~' || keyStr === '\x01') {
       this.cursor = 0;
       this.updateCursorPos();
       return;
     }
 
-    // End (\x1b[F, \x1b[4~, \x05)
-    if (keyStr === '\x1b[F' || keyStr === '\x1b[4~' || keyStr === '\x05') {
+    // End (\x1b[F, \x1bOF, \x1b[4~, \x05)
+    if (keyStr === '\x1b[F' || keyStr === '\x1bOF' || keyStr === '\x1b[4~' || keyStr === '\x05') {
       this.cursor = this.inputBuffer.length;
       this.updateCursorPos();
       return;
@@ -925,7 +983,8 @@ export class BeurreWorkingBar {
         const speed = this.phaseTokPerSec > 0
           ? `${this.phaseTokPerSec.toFixed(1)} tok/s • `
           : (elapsed > 0 && this.phaseTokens > 0 ? `${(this.phaseTokens / elapsed).toFixed(1)} tok/s • ` : '');
-        this.statusText = `Generating (~${this.phaseTokens} tokens • ${speed}${elapsed.toFixed(1)}s)...`;
+        const snippetSuffix = this.phaseSnippet ? `: "${this.phaseSnippet}"` : '';
+        this.statusText = `Generating (~${this.phaseTokens} tokens • ${speed}${elapsed.toFixed(1)}s)${snippetSuffix}...`;
       } else if (this.currentPhase === 'status' && this.phaseStartTime > 0) {
         const elapsed = (Date.now() - this.phaseStartTime) / 1000;
         if (elapsed >= 0.5 && this.statusText.startsWith('Whipping up solution')) {
@@ -1000,7 +1059,9 @@ export class BeurreWorkingBar {
     this.phaseTokPerSec = tokPerSec || (elapsed > 0 ? tokens / elapsed : 0);
     const snippetSuffix = this.phaseSnippet ? `: "${this.phaseSnippet}"` : '';
     this.statusText = `Generating (~${tokens} tokens • ${speed}${elapsed.toFixed(1)}s)${snippetSuffix}...`;
-    if (this.isTTY && this.barDrawn) {
+    const now = Date.now();
+    if (this.isTTY && this.barDrawn && now - this.lastStatusUpdateTime >= 40) {
+      this.lastStatusUpdateTime = now;
       this.updateStatusLineInPlace();
     }
   }
@@ -1040,7 +1101,8 @@ export class BeurreWorkingBar {
 
   setLiveDetail(detail: string): void {
     if (this.currentPhase === 'tool') {
-      const cleaned = detail.trim().split('\n')[0].slice(0, 35);
+      const lines = detail.trim().split('\n').filter(Boolean);
+      const cleaned = (lines.pop() || '').slice(0, 35);
       if (cleaned) {
         this.liveDetail = cleaned;
         this.phaseDetail = `${this.baseToolDetail} [${cleaned}]`;
@@ -1062,9 +1124,32 @@ export class BeurreWorkingBar {
     try {
       const endsWithNewline = text.endsWith('\n');
       const out = endsWithNewline ? text : text + '\n';
-      this.clearBar();
-      process.stdout.write(out);
-      this.renderInitialBar();
+      const cols = process.stdout.columns || 80;
+      const lines = formatWorkingPromptBar({
+        cols,
+        spinnerFrame: this.getCurrentFrame(),
+        statusText: this.statusText,
+        model: this.options.model,
+        effort: this.options.effort,
+        user: this.options.user,
+        quotaText: this.options.quotaText,
+        interactive: true,
+        inputBuffer: this.inputBuffer,
+        cursor: this.cursor,
+        placeholder: this.placeholder,
+      });
+      const cursorCol = this.getCursorCol(cols);
+
+      if (this.barDrawn) {
+        process.stdout.write(
+          `\x1b[?2026h\x1b[?25l\x1b[2A\r\x1b[J${out}${lines.join('\n')}\x1b[2A\r\x1b[${cursorCol}G\x1b[?25h\x1b[?2026l`
+        );
+      } else {
+        process.stdout.write(
+          `\x1b[?2026h\x1b[?25l${out}${lines.join('\n')}\x1b[2A\r\x1b[${cursorCol}G\x1b[?25h\x1b[?2026l`
+        );
+        this.barDrawn = true;
+      }
     } finally {
       this.isRendering = false;
     }
@@ -1175,7 +1260,7 @@ export class BeurreWorkingBar {
       placeholder: this.placeholder,
     });
     // From Line 2, move up 2 lines to Line 0, clear line, write lines[0], move down 2 lines back to Line 2, restore column
-    process.stdout.write(`\x1b[2A\r\x1b[2K${lines[0]}\x1b[2B\r\x1b[${this.getCursorCol(cols)}G`);
+    process.stdout.write(`\x1b[?25l\x1b[2A\r\x1b[2K${lines[0]}\x1b[2B\r\x1b[${this.getCursorCol(cols)}G\x1b[?25h`);
   }
 
   private updateInputLine(): void {
@@ -1215,7 +1300,7 @@ export class BeurreWorkingBar {
       placeholder: this.placeholder,
     });
     // From Line 2, move down 2 lines to Line 4, clear line, write lines[4], move up 2 lines back to Line 2, restore column
-    process.stdout.write(`\x1b[2B\r\x1b[2K${lines[4]}\x1b[2A\r\x1b[${this.getCursorCol(cols)}G`);
+    process.stdout.write(`\x1b[?25l\x1b[2B\r\x1b[2K${lines[4]}\x1b[2A\r\x1b[${this.getCursorCol(cols)}G\x1b[?25h`);
   }
 
   private updateCursorPos(): void {
@@ -1226,7 +1311,7 @@ export class BeurreWorkingBar {
   private clearBar(): void {
     if (!this.barDrawn || !this.isTTY) return;
     // Cursor is on Line 2. Move up 2 lines to Line 0, clear from Line 0 down to bottom of screen
-    process.stdout.write('\x1b[2A\r\x1b[J');
+    process.stdout.write('\x1b[?25l\x1b[2A\r\x1b[J\x1b[?25h');
     this.barDrawn = false;
   }
 

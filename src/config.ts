@@ -68,7 +68,7 @@ const DEFAULT_CONFIG: BeurreConfig = {
   // comes from RELAY_API_KEY, ~/.beurre/config.json, or ~/.omp/agent/models.yml.
   apiKey: '',
   cookieFile: path.join(os.homedir(), 'model-aggregator', 'cookies.txt'),
-  defaultModel: 'glm-5-3-flash',
+  defaultModel: 'vsllm/qwen3.8-max-0902',
   subagents: {
     Architect: {
       name: 'Architect',

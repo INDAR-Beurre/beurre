@@ -218,13 +218,13 @@ export async function openModelPicker(
         return;
       }
 
-      if (str === '\x1b[A') {
+      if (str === '\x1b[A' || str === '\x1bOA') {
         if (selectedIdx > 0) selectedIdx--;
         repaint();
         return;
       }
 
-      if (str === '\x1b[B') {
+      if (str === '\x1b[B' || str === '\x1bOB') {
         if (selectedIdx < filtered.length - 1) selectedIdx++;
         repaint();
         return;
@@ -242,14 +242,14 @@ export async function openModelPicker(
         return;
       }
 
-      if (str === '\x1b[H' || str === '\x1b[1~' || str === '\x01') {
+      if (str === '\x1b[H' || str === '\x1bOH' || str === '\x1b[1~' || str === '\x01') {
         selectedIdx = 0;
         scrollOffset = 0;
         repaint();
         return;
       }
 
-      if (str === '\x1b[F' || str === '\x1b[4~' || str === '\x05') {
+      if (str === '\x1b[F' || str === '\x1bOF' || str === '\x1b[4~' || str === '\x05') {
         selectedIdx = Math.max(0, filtered.length - 1);
         repaint();
         return;

@@ -76,6 +76,16 @@ export interface ChatCompletionResult {
 }
 
 const KNOWN_MODEL_NAMES: Record<string, string> = {
+  'vsllm/qwen3.8-max-0902': 'Qwen 3.8 Max',
+  'hcnsec/Qwen3.8-Flash-Next': 'Qwen 3.8 Flash Next',
+  'hcnsec/step-5-preview': 'Step 5 Preview',
+  'antigravity/gemini-3.8-flash-tiered': 'Gemini 3.8 Flash Tiered',
+  'agnes/agnes-3.0-flash': 'Agnes 3.0 Flash',
+  'yjs/agnes-3.0-flash': 'Agnes 3.0 Flash',
+  'agnes/agnes-2.5-flash': 'Agnes 2.5 Flash',
+  'crax/gemini-3-8-flash': 'Gemini 3.8 Flash',
+  'crax/kimi-k3': 'Kimi K3',
+  'crax/gpt-6-astra': 'GPT-6 Astra',
   'claude-opus-5-5': 'Claude Opus 5.5',
   'claude-opus-4-8': 'Claude Opus 4.8',
   'claude-opus-5': 'Claude Opus 5',
@@ -107,6 +117,30 @@ const KNOWN_MODEL_NAMES: Record<string, string> = {
   'mimo-v2-6-pro': 'Mimo v2.6 Pro',
   'atria-dawn': 'Atria Dawn',
 };
+
+export const VERIFIED_HEALTHY_MODELS: string[] = [
+  'vsllm/qwen3.8-max-0902',
+  'hcnsec/Qwen3.8-Flash-Next',
+  'hcnsec/step-5-preview',
+  'antigravity/gemini-3.8-flash-tiered',
+  'agnes/agnes-3.0-flash',
+  'yjs/agnes-3.0-flash',
+];
+
+export function isModelErrorContent(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return (
+    trimmed.startsWith('[Error:') ||
+    trimmed.startsWith('Error: [') ||
+    trimmed.includes('USER_BLOCKED') ||
+    trimmed.includes('"code":"USER_BLOCKED"') ||
+    trimmed.includes('Provider rejected') ||
+    trimmed.includes('RateLimitExceeded') ||
+    trimmed.startsWith('{"error":') ||
+    trimmed.startsWith('{"message":"Provider')
+  );
+}
 
 export function getModelDisplayName(modelId: string, modelList?: RelayModel[]): string {
   const cleanId = modelId.split(':')[0];
@@ -320,6 +354,11 @@ export function extractToolCallsFromContent(content: string): {
 }
 
 export const DEFAULT_FALLBACK_MODELS: RelayModel[] = [
+  { id: 'vsllm/qwen3.8-max-0902', name: 'Qwen 3.8 Max', owned_by: 'vsllm', reasoning: true, context_length: 1000000 },
+  { id: 'hcnsec/Qwen3.8-Flash-Next', name: 'Qwen 3.8 Flash Next', owned_by: 'hcnsec', reasoning: true, context_length: 128000 },
+  { id: 'hcnsec/step-5-preview', name: 'Step 5 Preview', owned_by: 'hcnsec', reasoning: true, context_length: 128000 },
+  { id: 'antigravity/gemini-3.8-flash-tiered', name: 'Gemini 3.8 Flash Tiered', owned_by: 'antigravity', reasoning: true, context_length: 128000 },
+  { id: 'agnes/agnes-3.0-flash', name: 'Agnes 3.0 Flash', owned_by: 'agnes', reasoning: false, context_length: 128000 },
   { id: 'yjs/glm-5.3-flash', name: 'GLM 5.3 Flash', owned_by: 'yjs', reasoning: true, context_length: 1049000 },
   { id: 'crax/kimi-k3', name: 'Kimi K3', owned_by: 'crax', reasoning: true, context_length: 1049000 },
   { id: 'crax/gpt-6-astra', name: 'GPT-6 Astra', owned_by: 'crax', reasoning: true, context_length: 1050000 },
@@ -584,311 +623,392 @@ export class RelayClient {
   }
 
   async streamChatCompletion(options: ChatCompletionOptions): Promise<ChatCompletionResult> {
-    const model = options.model || this.config.defaultModel;
-    const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl];
+    const requestedModel = options.model || this.config.defaultModel;
+    const candidateModels = [
+      requestedModel,
+      ...VERIFIED_HEALTHY_MODELS.filter((m) => m !== requestedModel),
+    ];
+    const modelsToTry = candidateModels.slice(0, 3);
+    const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl].filter(Boolean);
     let lastError: unknown = null;
+    let streamedToCaller = false;
 
-    for (const baseUrl of endpoints) {
-      try {
-        const payload: Record<string, any> = {
-          model,
-          messages: options.messages,
-          stream: true,
-        };
+    for (let modelIdx = 0; modelIdx < modelsToTry.length; modelIdx++) {
+      const model = modelsToTry[modelIdx];
+      if (options.signal?.aborted) {
+        throw new Error('Operation aborted');
+      }
 
-        // Reasoning effort handling
-        const effort = options.effort || (model.includes(':') ? model.split(':')[1] : undefined);
-        if (effort) {
-          payload.reasoning_effort = effort;
-          const lowerModel = model.toLowerCase();
-          if (lowerModel.includes('claude') || lowerModel.includes('opus') || lowerModel.includes('sonnet')) {
-            const budgetMap: Record<string, number> = {
-              max: 64000,
-              xhigh: 32000,
-              high: 16000,
-              medium: 8000,
-              low: 2000,
-            };
-            const budget = budgetMap[effort.toLowerCase()] || 8000;
-            payload.thinking = { type: 'enabled', budget_tokens: budget };
-          }
+      for (const baseUrl of endpoints) {
+        if (options.signal?.aborted) {
+          throw new Error('Operation aborted');
         }
 
-        if (options.tools && options.tools.length > 0) {
-          payload.tools = options.tools;
-          payload.tool_choice = 'auto';
-        }
+        try {
+          const payload: Record<string, any> = {
+            model,
+            messages: options.messages,
+            stream: true,
+          };
 
-        // Only include temperature if not a reasoning model
-        const isReasoning = model.includes('o1') || model.includes('o3') || model.includes('reasoning');
-        if (!isReasoning && options.temperature !== undefined) {
-          payload.temperature = options.temperature;
-        }
-
-        let res = await fetch(`${baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: this.getAuthHeaders(),
-          body: JSON.stringify(payload),
-          signal: options.signal,
-        });
-
-        // Transient error retry (429 rate limit or 503/502 gateway blip)
-        if (!res.ok && (res.status === 429 || res.status === 503 || res.status === 502) && !options.signal?.aborted) {
-          await new Promise((r) => setTimeout(r, 600));
-          if (!options.signal?.aborted) {
-            const retryAttempt = await fetch(`${baseUrl}/chat/completions`, {
-              method: 'POST',
-              headers: this.getAuthHeaders(),
-              body: JSON.stringify(payload),
-              signal: options.signal,
-            }).catch(() => null);
-            if (retryAttempt && retryAttempt.ok) {
-              res = retryAttempt;
+          // Reasoning effort handling
+          const effort = options.effort || (model.includes(':') ? model.split(':')[1] : undefined);
+          if (effort) {
+            payload.reasoning_effort = effort;
+            const lowerModel = model.toLowerCase();
+            if (lowerModel.includes('claude') || lowerModel.includes('opus') || lowerModel.includes('sonnet')) {
+              const budgetMap: Record<string, number> = {
+                max: 64000,
+                xhigh: 32000,
+                high: 16000,
+                medium: 8000,
+                low: 2000,
+              };
+              const budget = budgetMap[effort.toLowerCase()] || 8000;
+              payload.thinking = { type: 'enabled', budget_tokens: budget };
             }
           }
-        }
 
-        // Chat-proxied fallback: if upstream returns 400 Bad Request and tools were present,
-        // retry without tools because web-chat proxies (e.g. claude-opus-5-5) often reject OpenAI tools schema
-        if (!res.ok && res.status === 400 && payload.tools) {
-          const fallbackPayload: Record<string, any> = { ...payload };
-          delete fallbackPayload.tools;
-          delete fallbackPayload.tool_choice;
-          if (fallbackPayload.messages && Array.isArray(fallbackPayload.messages)) {
-            fallbackPayload.messages = fallbackPayload.messages.map((m: ChatMessage) => {
-              if (m.role === 'tool') {
-                return {
-                  role: 'user',
-                  content: `<tool_response name="${m.name || 'tool'}">\n${m.content}\n</tool_response>`,
-                };
-              }
-              return m;
-            });
+          if (options.tools && options.tools.length > 0) {
+            payload.tools = options.tools;
+            payload.tool_choice = 'auto';
           }
-          const retryRes = await fetch(`${baseUrl}/chat/completions`, {
+
+          // Only include temperature if not a reasoning model
+          const isReasoning = model.includes('o1') || model.includes('o3') || model.includes('reasoning');
+          if (!isReasoning && options.temperature !== undefined) {
+            payload.temperature = options.temperature;
+          }
+
+          let res = await fetch(`${baseUrl}/chat/completions`, {
             method: 'POST',
             headers: this.getAuthHeaders(),
-            body: JSON.stringify(fallbackPayload),
+            body: JSON.stringify(payload),
             signal: options.signal,
           });
-          if (retryRes.ok) {
-            res = retryRes;
-          }
-        }
 
-        if (!res.ok) {
-          const errText = await res.text().catch(() => '');
-          throw new Error(`Relay HTTP ${res.status}: ${errText.slice(0, 300)}`);
-        }
-
-        if (!res.body) {
-          throw new Error('No response body from relay stream');
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        let content = '';
-        let reasoning = '';
-        let finishReason: string | undefined;
-        const toolCallsMap = new Map<number, { id: string; name: string; args: string }>();
-
-        let inThinkTag = false;
-        let thinkTagBuffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const rawLine of lines) {
-            const line = rawLine.trim();
-            if (!line || line.startsWith(':')) continue;
-            if (line === 'data: [DONE]') continue;
-
-            if (line.startsWith('data: ')) {
-              const jsonStr = line.slice(6);
-              try {
-                const parsed = JSON.parse(jsonStr);
-                const choice = parsed.choices?.[0];
-                if (!choice) continue;
-
-                if (choice.finish_reason) {
-                  finishReason = choice.finish_reason;
-                }
-
-                const delta = choice.delta;
-                if (!delta) continue;
-
-                // Reasoning tokens
-                const reasonDelta = delta.reasoning_content || delta.reasoning || delta.think;
-                if (reasonDelta) {
-                  reasoning += reasonDelta;
-                  options.onReasoning?.(reasonDelta);
-                }
-
-                // Main content & inline think tags handling (chunk-split resilient)
-                if (delta.content) {
-                  let text = thinkTagBuffer + delta.content;
-                  thinkTagBuffer = '';
-
-                  while (text.length > 0) {
-                    if (!inThinkTag) {
-                      const openMatch = /<(?:think|thought|reasoning)>/i.exec(text);
-                      if (openMatch) {
-                        const before = text.slice(0, openMatch.index);
-                        if (before) {
-                          content += before;
-                          options.onToken?.(before);
-                        }
-                        inThinkTag = true;
-                        text = text.slice(openMatch.index + openMatch[0].length);
-                      } else {
-                        const trailingPartial = /<(?:\/?(?:t(?:h(?:i(?:n(?:k)?)?)?)?|r(?:e(?:a(?:s(?:o(?:n)?)?)?)?)?))?$/i.exec(text);
-                        if (trailingPartial && trailingPartial.index < text.length) {
-                          const safe = text.slice(0, trailingPartial.index);
-                          if (safe) {
-                            content += safe;
-                            options.onToken?.(safe);
-                          }
-                          thinkTagBuffer = text.slice(trailingPartial.index);
-                          text = '';
-                        } else {
-                          content += text;
-                          options.onToken?.(text);
-                          text = '';
-                        }
-                      }
-                    } else {
-                      const closeMatch = /<\/(?:think|thought|reasoning)>/i.exec(text);
-                      if (closeMatch) {
-                        const before = text.slice(0, closeMatch.index);
-                        if (before) {
-                          reasoning += before;
-                          options.onReasoning?.(before);
-                        }
-                        inThinkTag = false;
-                        text = text.slice(closeMatch.index + closeMatch[0].length);
-                      } else {
-                        const trailingPartial = /<\/(?:t(?:h(?:i(?:n(?:k)?)?)?)?|r(?:e(?:a(?:s(?:o(?:n)?)?)?)?)?)?$/i.exec(text);
-                        if (trailingPartial && trailingPartial.index < text.length) {
-                          const safe = text.slice(0, trailingPartial.index);
-                          if (safe) {
-                            reasoning += safe;
-                            options.onReasoning?.(safe);
-                          }
-                          thinkTagBuffer = text.slice(trailingPartial.index);
-                          text = '';
-                        } else {
-                          reasoning += text;
-                          options.onReasoning?.(text);
-                          text = '';
-                        }
-                      }
-                    }
-                  }
-                }
-
-                // Tool calls
-                if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-                  for (const tc of delta.tool_calls) {
-                    const idx = tc.index ?? 0;
-                    const existing = toolCallsMap.get(idx) || { id: '', name: '', args: '' };
-                    if (tc.id) existing.id = tc.id;
-                    if (tc.function?.name) existing.name += tc.function.name;
-                    if (tc.function?.arguments) existing.args += tc.function.arguments;
-                    toolCallsMap.set(idx, existing);
-                  }
-                }
-              } catch {
-                // partial json or parse error
+          // Transient error retry (429 rate limit or 503/502 gateway blip)
+          if (!res.ok && (res.status === 429 || res.status === 503 || res.status === 502) && !options.signal?.aborted) {
+            await new Promise((r) => setTimeout(r, 600));
+            if (!options.signal?.aborted) {
+              const retryAttempt = await fetch(`${baseUrl}/chat/completions`, {
+                method: 'POST',
+                headers: this.getAuthHeaders(),
+                body: JSON.stringify(payload),
+                signal: options.signal,
+              }).catch(() => null);
+              if (retryAttempt && retryAttempt.ok) {
+                res = retryAttempt;
               }
             }
           }
-        }
 
-        if (buffer.trim()) {
-          const trailingLines = buffer.split('\n');
-          for (const rawLine of trailingLines) {
-            const line = rawLine.trim();
-            if (!line || line.startsWith(':') || line === 'data: [DONE]') continue;
-            if (line.startsWith('data: ')) {
-              try {
-                const parsed = JSON.parse(line.slice(6));
-                const choice = parsed.choices?.[0];
-                if (choice?.delta) {
+          // Chat-proxied fallback: if upstream returns 400 Bad Request and tools were present,
+          // retry without tools because web-chat proxies (e.g. claude-opus-5-5) often reject OpenAI tools schema
+          if (!res.ok && res.status === 400 && payload.tools) {
+            const fallbackPayload: Record<string, any> = { ...payload };
+            delete fallbackPayload.tools;
+            delete fallbackPayload.tool_choice;
+            if (fallbackPayload.messages && Array.isArray(fallbackPayload.messages)) {
+              fallbackPayload.messages = fallbackPayload.messages.map((m: ChatMessage) => {
+                if (m.role === 'tool') {
+                  return {
+                    role: 'user',
+                    content: `<tool_response name="${m.name || 'tool'}">\n${m.content}\n</tool_response>`,
+                  };
+                }
+                return m;
+              });
+            }
+            const retryRes = await fetch(`${baseUrl}/chat/completions`, {
+              method: 'POST',
+              headers: this.getAuthHeaders(),
+              body: JSON.stringify(fallbackPayload),
+              signal: options.signal,
+            });
+            if (retryRes.ok) {
+              res = retryRes;
+            }
+          }
+
+          if (!res.ok) {
+            const errText = await res.text().catch(() => '');
+            throw new Error(`Relay HTTP ${res.status}: ${errText.slice(0, 300)}`);
+          }
+
+          if (!res.body) {
+            throw new Error('No response body from relay stream');
+          }
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          let content = '';
+          let reasoning = '';
+          let finishReason: string | undefined;
+          const toolCallsMap = new Map<number, { id: string; name: string; args: string }>();
+
+          let inThinkTag = false;
+          let thinkTagBuffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const rawLine of lines) {
+              const line = rawLine.trim();
+              if (!line || line.startsWith(':')) continue;
+              if (line === 'data: [DONE]') continue;
+
+              if (line.startsWith('data: ')) {
+                const jsonStr = line.slice(6);
+                try {
+                  const parsed = JSON.parse(jsonStr);
+                  if (parsed.error) {
+                    const errMsg = parsed.error.message || JSON.stringify(parsed.error);
+                    throw new Error(`Relay stream error: ${errMsg}`);
+                  }
+
+                  const choice = parsed.choices?.[0];
+                  if (!choice) continue;
+
+                  if (choice.finish_reason) {
+                    finishReason = choice.finish_reason;
+                  }
+
                   const delta = choice.delta;
+                  if (!delta) continue;
+
+                  // Failover check for immediate error content delta
+                  if (delta.content && isModelErrorContent(delta.content) && !content) {
+                    throw new Error(`Upstream model error: ${delta.content.trim()}`);
+                  }
+
+                  // Reasoning tokens
                   const reasonDelta = delta.reasoning_content || delta.reasoning || delta.think;
                   if (reasonDelta) {
                     reasoning += reasonDelta;
                     options.onReasoning?.(reasonDelta);
                   }
+
+                  // Main content & inline think tags handling (chunk-split resilient)
                   if (delta.content) {
-                    content += delta.content;
-                    options.onToken?.(delta.content);
+                    let text = thinkTagBuffer + delta.content;
+                    thinkTagBuffer = '';
+
+                    while (text.length > 0) {
+                      if (!inThinkTag) {
+                        const openMatch = /<(?:think|thought|reasoning)>/i.exec(text);
+                        if (openMatch) {
+                          const before = text.slice(0, openMatch.index);
+                          if (before) {
+                            content += before;
+                            if (options.onToken) {
+                              streamedToCaller = true;
+                              options.onToken(before);
+                            }
+                          }
+                          inThinkTag = true;
+                          text = text.slice(openMatch.index + openMatch[0].length);
+                        } else {
+                          const trailingPartial = /<(?:\/?[a-zA-Z]*)?$/i.exec(text);
+                          if (trailingPartial && trailingPartial.index < text.length) {
+                            const safe = text.slice(0, trailingPartial.index);
+                            if (safe) {
+                              content += safe;
+                              if (options.onToken) {
+                                streamedToCaller = true;
+                                options.onToken(safe);
+                              }
+                            }
+                            thinkTagBuffer = text.slice(trailingPartial.index);
+                            text = '';
+                          } else {
+                            content += text;
+                            if (options.onToken) {
+                              streamedToCaller = true;
+                              options.onToken(text);
+                            }
+                            text = '';
+                          }
+                        }
+                      } else {
+                        const closeMatch = /<\/(?:think|thought|reasoning)>/i.exec(text);
+                        if (closeMatch) {
+                          const before = text.slice(0, closeMatch.index);
+                          if (before) {
+                            reasoning += before;
+                            options.onReasoning?.(before);
+                          }
+                          inThinkTag = false;
+                          text = text.slice(closeMatch.index + closeMatch[0].length);
+                        } else {
+                          const trailingPartial = /<(?:\/?[a-zA-Z]*)?$/i.exec(text);
+                          if (trailingPartial && trailingPartial.index < text.length) {
+                            const safe = text.slice(0, trailingPartial.index);
+                            if (safe) {
+                              reasoning += safe;
+                              options.onReasoning?.(safe);
+                            }
+                            thinkTagBuffer = text.slice(trailingPartial.index);
+                            text = '';
+                          } else {
+                            reasoning += text;
+                            options.onReasoning?.(text);
+                            text = '';
+                          }
+                        }
+                      }
+                    }
                   }
+
+                  // Tool calls
+                  if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+                    for (const tc of delta.tool_calls) {
+                      const idx = tc.index ?? 0;
+                      const existing = toolCallsMap.get(idx) || { id: '', name: '', args: '' };
+                      if (tc.id) existing.id = tc.id;
+                      if (tc.function?.name) existing.name += tc.function.name;
+                      if (tc.function?.arguments) existing.args += tc.function.arguments;
+                      toolCallsMap.set(idx, existing);
+                    }
+                  }
+                } catch (parseErr: unknown) {
+                  if (
+                    parseErr instanceof Error &&
+                    (parseErr.message.startsWith('Relay stream error') ||
+                      parseErr.message.startsWith('Upstream model error'))
+                  ) {
+                    throw parseErr;
+                  }
+                  // partial json or parse error
                 }
-              } catch {}
+              }
             }
           }
-          buffer = '';
-        }
 
-        if (thinkTagBuffer) {
-          if (inThinkTag) {
-            reasoning += thinkTagBuffer;
-            options.onReasoning?.(thinkTagBuffer);
-          } else {
-            content += thinkTagBuffer;
-            options.onToken?.(thinkTagBuffer);
+          if (buffer.trim()) {
+            const trailingLines = buffer.split('\n');
+            for (const rawLine of trailingLines) {
+              const line = rawLine.trim();
+              if (!line || line.startsWith(':') || line === 'data: [DONE]') continue;
+              if (line.startsWith('data: ')) {
+                try {
+                  const parsed = JSON.parse(line.slice(6));
+                  if (parsed.error) {
+                    const errMsg = parsed.error.message || JSON.stringify(parsed.error);
+                    throw new Error(`Relay stream error: ${errMsg}`);
+                  }
+                  const choice = parsed.choices?.[0];
+                  if (choice?.delta) {
+                    const delta = choice.delta;
+                    if (delta.content && isModelErrorContent(delta.content) && !content) {
+                      throw new Error(`Upstream model error: ${delta.content.trim()}`);
+                    }
+                    const reasonDelta = delta.reasoning_content || delta.reasoning || delta.think;
+                    if (reasonDelta) {
+                      reasoning += reasonDelta;
+                      options.onReasoning?.(reasonDelta);
+                    }
+                    if (delta.content) {
+                      content += delta.content;
+                      if (options.onToken) {
+                        streamedToCaller = true;
+                        options.onToken(delta.content);
+                      }
+                    }
+                  }
+                } catch (parseErr: unknown) {
+                  if (
+                    parseErr instanceof Error &&
+                    (parseErr.message.startsWith('Relay stream error') ||
+                      parseErr.message.startsWith('Upstream model error'))
+                  ) {
+                    throw parseErr;
+                  }
+                }
+              }
+            }
+            buffer = '';
           }
-          thinkTagBuffer = '';
-        }
 
-        if (!content.trim() && reasoning.trim() && toolCallsMap.size === 0) {
-          content = reasoning;
-        }
-
-        const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
-          let parsedArgs = {};
-          try {
-            parsedArgs = JSON.parse(tc.args || '{}');
-          } catch {
-            parsedArgs = { raw: tc.args };
+          if (thinkTagBuffer) {
+            if (inThinkTag) {
+              reasoning += thinkTagBuffer;
+              options.onReasoning?.(thinkTagBuffer);
+            } else {
+              content += thinkTagBuffer;
+              if (options.onToken) {
+                streamedToCaller = true;
+                options.onToken(thinkTagBuffer);
+              }
+            }
+            thinkTagBuffer = '';
           }
+
+          if (isModelErrorContent(content) && toolCallsMap.size === 0) {
+            throw new Error(`Upstream model error: ${content.trim()}`);
+          }
+
+          if (!content.trim() && reasoning.trim() && toolCallsMap.size === 0) {
+            content = reasoning;
+          }
+
+          if (!content.trim() && !reasoning.trim() && toolCallsMap.size === 0) {
+            throw new Error(`Relay model ${model} returned empty response`);
+          }
+
+          const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
+            let parsedArgs = {};
+            try {
+              parsedArgs = JSON.parse(tc.args || '{}');
+            } catch {
+              parsedArgs = { raw: tc.args };
+            }
+            return {
+              id: tc.id || `call_${Math.random().toString(36).slice(2, 9)}`,
+              name: tc.name,
+              arguments: parsedArgs,
+              rawArguments: tc.args,
+            };
+          });
+
+          // Tool-call parsing fallback: If no native tool_calls were emitted, extract from content
+          // This handles chat-proxied models (e.g. claude-opus-5-5, claude-opus-4-8) that emit XML or JSON tool calls
+          if (toolCalls.length === 0 && content) {
+            const { toolCalls: extracted, cleanedContent } = extractToolCallsFromContent(content);
+            if (extracted.length > 0) {
+              toolCalls.push(...extracted);
+              content = cleanedContent;
+            }
+          }
+
           return {
-            id: tc.id || `call_${Math.random().toString(36).slice(2, 9)}`,
-            name: tc.name,
-            arguments: parsedArgs,
-            rawArguments: tc.args,
+            content,
+            reasoning,
+            toolCalls,
+            model,
+            finishReason,
           };
-        });
-
-        // Tool-call parsing fallback: If no native tool_calls were emitted, extract from content
-        // This handles chat-proxied models (e.g. claude-opus-5-5, claude-opus-4-8) that emit XML or JSON tool calls
-        if (toolCalls.length === 0 && content) {
-          const { toolCalls: extracted, cleanedContent } = extractToolCallsFromContent(content);
-          if (extracted.length > 0) {
-            toolCalls.push(...extracted);
-            content = cleanedContent;
+        } catch (err: unknown) {
+          lastError = err;
+          if (options.signal?.aborted || streamedToCaller) {
+            throw err;
           }
-        }
-
-        return {
-          content,
-          reasoning,
-          toolCalls,
-          model,
-          finishReason,
-        };
-      } catch (err: unknown) {
-        lastError = err;
-        if (options.signal?.aborted) {
-          throw err;
+          if (
+            err instanceof Error &&
+            (err.message.includes('403') ||
+              err.message.includes('USER_BLOCKED') ||
+              err.message.startsWith('Upstream model error'))
+          ) {
+            // Model itself is blocked or rejected across providers — advance to next candidate model immediately
+            break;
+          }
         }
       }
     }

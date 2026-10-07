@@ -22,6 +22,7 @@ export interface EditorPromptOptions {
   onCycleEffort?: (newEffort: string) => void;
   onAbort?: () => void;
   signal?: AbortSignal;
+  cols?: number;
 }
 
 export interface EditorCoords {
@@ -573,8 +574,8 @@ export function handleKeyStroke(
     return { state: s, action: 'none' };
   }
 
-  // Up arrow: \x1b[A
-  if (keyStr === '\x1b[A') {
+  // Up arrow: \x1b[A or \x1bOA
+  if (keyStr === '\x1b[A' || keyStr === '\x1bOA') {
     if (s.fileMatches && s.fileMatches.length > 0) {
       s.selectedFileIdx = (s.selectedFileIdx ?? 0) <= 0
         ? s.fileMatches.length - 1
@@ -625,8 +626,8 @@ export function handleKeyStroke(
     }
   }
 
-  // Down arrow: \x1b[B
-  if (keyStr === '\x1b[B') {
+  // Down arrow: \x1b[B or \x1bOB
+  if (keyStr === '\x1b[B' || keyStr === '\x1bOB') {
     if (s.fileMatches && s.fileMatches.length > 0) {
       s.selectedFileIdx = ((s.selectedFileIdx ?? 0) + 1) % s.fileMatches.length;
       return { state: s, action: 'none' };
@@ -658,16 +659,16 @@ export function handleKeyStroke(
     return { state: s, action: 'none' };
   }
 
-  // Left arrow: \x1b[D
-  if (keyStr === '\x1b[D') {
+  // Left arrow: \x1b[D or \x1bOD
+  if (keyStr === '\x1b[D' || keyStr === '\x1bOD') {
     if (s.cursor > 0) {
       s.cursor--;
     }
     return { state: s, action: 'none' };
   }
 
-  // Right arrow: \x1b[C
-  if (keyStr === '\x1b[C') {
+  // Right arrow: \x1b[C or \x1bOC
+  if (keyStr === '\x1b[C' || keyStr === '\x1bOC') {
     if (s.cursor < s.buffer.length) {
       s.cursor++;
     } else if (s.autocompleteMatches.length > 0) {
@@ -681,8 +682,8 @@ export function handleKeyStroke(
     return { state: s, action: 'none' };
   }
 
-  // Home: \x1b[H, \x1b[1~, Ctrl+A (\x01)
-  if (keyStr === '\x1b[H' || keyStr === '\x1b[1~' || keyStr === '\x01') {
+  // Home: \x1b[H, \x1bOH, \x1b[1~, Ctrl+A (\x01)
+  if (keyStr === '\x1b[H' || keyStr === '\x1bOH' || keyStr === '\x1b[1~' || keyStr === '\x01') {
     const coords = getBuffer2DCoords(s.buffer, s.cursor);
     if (coords.colIdx === 0) {
       s.cursor = 0;
@@ -692,8 +693,8 @@ export function handleKeyStroke(
     return { state: s, action: 'none' };
   }
 
-  // End: \x1b[F, \x1b[4~, Ctrl+E (\x05)
-  if (keyStr === '\x1b[F' || keyStr === '\x1b[4~' || keyStr === '\x05') {
+  // End: \x1b[F, \x1bOF, \x1b[4~, Ctrl+E (\x05)
+  if (keyStr === '\x1b[F' || keyStr === '\x1bOF' || keyStr === '\x1b[4~' || keyStr === '\x05') {
     const coords = getBuffer2DCoords(s.buffer, s.cursor);
     const lineLen = coords.lines[coords.lineIdx]?.length ?? 0;
     if (coords.colIdx === lineLen) {
@@ -863,7 +864,7 @@ export class BeurreEditor {
       };
 
       const render = () => {
-        const cols = Math.min(stdout.columns || 80, 100);
+        const cols = options.cols || Math.max(20, stdout.columns || 80);
         const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
         clearBox();

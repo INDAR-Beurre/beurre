@@ -228,6 +228,9 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
               callbacks.onReasoning?.(res);
             },
           });
+          if (result.model && result.model !== this.currentModel) {
+            this.currentModel = result.model;
+          }
         } catch (err: unknown) {
           if (signal?.aborted) {
             throw err;

@@ -570,6 +570,32 @@ All tests must pass with **100% green status** (0 failures).
 - **Verification:**
   - Passed all 878 tests across 22 test files with 0 failures in `bun test`.
 
+### [2026-10-07] — Multi-Model Automatic Failover, Terminal Flicker Elimination & Live Telemetry
+- **Author/Agent:** Antigravity / Beurre Engineering Agent
+- **Key Enhancements & Bug Fixes:**
+  1. **Multi-Model Automatic Failover & Outage Immunity (`src/relay.ts`, `src/agent.ts`, `src/config.ts`):**
+     - Diagnosed upstream default model `glm-5-3-flash` being blocked by Z.ai with `403 USER_BLOCKED: {"code":"USER_BLOCKED"}`. `streamChatCompletion` previously swallowed `data: {"error": ...}` SSE events and treated error chunks as valid assistant replies.
+     - Implemented `isModelErrorContent()` and SSE `parsed.error` throw handling to catch provider-level errors immediately before user-facing emissions.
+     - Implemented multi-model candidate retry loop in `streamChatCompletion` with fast-break across endpoints on account blocks, automatically failing over to `VERIFIED_HEALTHY_MODELS` (`vsllm/qwen3.8-max-0902`, `hcnsec/Qwen3.8-Flash-Next`, etc.).
+     - Updated `BeurreAgent` to dynamically adopt the healthy failover model for subsequent turns.
+     - Set `defaultModel` in `src/config.ts` to `vsllm/qwen3.8-max-0902`.
+  2. **Terminal Clobbering & Screen Flicker Elimination (`src/theme.ts`):**
+     - Upgraded `BeurreWorkingBar.writeAbove()` to use single atomic DEC 2026 synchronized output (`\x1b[?2026h` ... `\x1b[?2026l`) and cursor hiding (`\x1b[?25l` ... `\x1b[?25h`). Erase, content write, 5-line bar redraw, and cursor positioning now execute in a single atomic frame with zero scroll jumps or screen tearing.
+     - Wrapped in-place updates and `clearBar()` in cursor hide/show escapes to prevent micro-flicker during the 80ms spinner interval.
+  3. **Real-Time Dynamic Telemetry & Rolling Generation Preview (`src/theme.ts`, `src/repl.ts`):**
+     - Enhanced `setGenerating()` and the 80ms interval timer to display live rolling text snippets alongside speed (`tok/s`), token counts, and elapsed duration.
+     - Wired real-time response snippets from `repl.ts` turn streaming into `workingBar.setGenerating()`.
+  4. **Responsive Width Unclamping (`src/theme.ts`, `src/editor.ts`, `src/markdown.ts`):**
+     - Removed arbitrary 100-column caps in `formatWorkingPromptBar`, `getCursorCol`, and `BeurreEditor.readPrompt()`, and 80-column caps in `StreamingMarkdownHighlighter`, `renderMarkdownBlock`, and `formatThinkingBlock`.
+     - Preserved strict mathematical width bounds (`stringWidth <= cols`) for all terminals from 20 to 200+ columns.
+  5. **Turbo Boost Flagship Tuning (`src/repl.ts`):**
+     - Updated `selectFlagshipBoostModel` to support fallback candidates when model catalogs are supplied, while strictly maintaining existing unit test contracts.
+- **Verification:**
+  - Ran `bun test`: 878 passing tests across 22 test files with 0 failures.
+  - Verified live failover from blocked `glm-5-3-flash` to `vsllm/qwen3.8-max-0902`.
+  - Verified headless execution with reasoning and tool invocation (`echo PONG`) via `bun run src/index.ts -p "Reply with the single word PONG"`.
+  - Verified width safety across 20, 30, 40, 60, 80, 100, 120, 150, 200 columns.
+
 ### [2026-10-04] — Pinned Working Prompt Bar & AGENTS.md Protocol
 - **Author/Agent:** Antigravity / Beurre Engineering Agent
 - **Files Modified:**
@@ -579,3 +605,28 @@ All tests must pass with **100% green status** (0 failures).
   - `src/agent.ts`: Added change-tracking protocol to system prompt.
   - `AGENTS.md`: Initial creation.
   - `CLAUDE.md`, `PROJECT.md`: Symlinks to `AGENTS.md`.
+
+### [2026-10-07] — Interactive Steering History, Terminal Ergonomics & High-Fidelity Streaming
+- **Author/Agent:** Antigravity / Beurre Engineering Agent
+- **Key Enhancements & Bug Fixes:**
+  1. **Accurate Provider Error Discrimination (`src/relay.ts`):**
+     - Hardened `isModelErrorContent` to match real upstream provider error envelopes (`[Error: 403 USER_BLOCKED]`, `{"error": ...}`, `Provider rejected:`, `RateLimitExceeded`) while eliminating false positives on standard coding discussion of error messages (e.g. `Error: Cannot find module...`, `server overloaded...`).
+  2. **Interactive Steering History Recall & Word Navigation (`src/theme.ts`, `src/repl.ts`):**
+     - Added steering command history navigation to `BeurreWorkingBar`: `Up` and `Down` arrows now recall previous steering messages with full draft preservation.
+     - Added word navigation (`Alt+Left` / `Ctrl+Left`, `Alt+Right` / `Ctrl+Right`) to `BeurreWorkingBar`.
+     - Provided instant visual steering feedback badge (`⤹ [Steered Agent]: <message>`) and status updates.
+     - Passed REPL command history to `BeurreWorkingBar` on initialization.
+  3. **Universal SS3 Arrow & Navigation Key Support (`src/editor.ts`, `src/theme.ts`, `src/model-picker.ts`):**
+     - Added SS3 sequence support (`\x1bOA`, `\x1bOB`, `\x1bOC`, `\x1bOD`, `\x1bOH`, `\x1bOF`) across `BeurreEditor`, `BeurreWorkingBar`, and `model-picker` to ensure seamless compatibility with all terminal emulators and keypad modes.
+  4. **Markdown Auto-Wrap & Double Line-Spacing Elimination (`src/markdown.ts`):**
+     - Stripped trailing space padding (`md.render().map(l => l.trimEnd())`) in `renderMarkdownBlock` to prevent fixed-width TUI canvas padding from overflowing terminal widths and creating double line breaks.
+  5. **Terminal Rate-Limiting & Live Detail Tracking (`src/theme.ts`):**
+     - Throttled in-place status line redraws in `setGenerating` to at most once per 40ms, preventing cursor jitter on high tok/s streams.
+     - Updated `setLiveDetail` to track the newest output line (`lines.pop()`) rather than the oldest line during command execution.
+     - Removed arbitrary 100-column clamps in `formatToolResult` and `banner`.
+  6. **Boost Mode Presentation Polish (`src/repl.ts`):**
+     - Cleaned up `/boost <prompt>` to preserve user-facing prompt text with `[⚡ BOOSTED]` badge in the chat card and Supabase cloud session store, without leaking internal harness prompts.
+- **Verification:**
+  - Ran `bun test`: All 883 tests across 22 test files passed with 0 failures.
+  - Added unit tests in `tests/cl-improvements.test.ts` covering steering history recall, word jumping, SS3 arrow keys, error discrimination, and markdown trimming.
+
