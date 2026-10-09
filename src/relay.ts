@@ -1,5 +1,15 @@
 import dns from 'node:dns';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { loadConfig, extractCookie } from './config.ts';
+import {
+  buildRelayChatModel,
+  buildRelayImageModel,
+  generateRelayImage,
+  streamRelayCompletion,
+  toPiContext,
+} from './pi-transport.ts';
 
 if (dns.setDefaultResultOrder) {
   dns.setDefaultResultOrder('ipv4first');
@@ -407,6 +417,19 @@ export function loadFallbackCatalog(): RelayModel[] {
   return models;
 }
 
+/** No-tools fallback: fold tool results into user text for proxies that reject the tools schema. */
+function flattenToolResults(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => {
+    if (m.role === 'tool') {
+      return {
+        role: 'user' as const,
+        content: `<tool_response name="${m.name || 'tool'}">\n${m.content}\n</tool_response>`,
+      };
+    }
+    return m;
+  });
+}
+
 export class RelayClient {
   private config = loadConfig();
   private modelsCache: RelayModel[] | null = null;
@@ -415,6 +438,20 @@ export class RelayClient {
 
   constructor() {
     this.config = loadConfig();
+  }
+
+  /**
+   * Build the small OMP model descriptor used by Beurre's embedded agent
+   * runtime. The descriptor deliberately points at Relay rather than loading
+   * OMP's provider catalogue, OAuth flows, or any of its optional services.
+   */
+  buildChatModel(model = this.config.defaultModel) {
+    return buildRelayChatModel(model, this.config.relayUrl, this.cookieHeaders());
+  }
+
+  /** Return the configured Relay credential without exposing the full config. */
+  getApiKey(): string {
+    return this.config.apiKey;
   }
 
   private getAuthHeaders(): Record<string, string> {
@@ -547,44 +584,32 @@ export class RelayClient {
 
   async generateImage(
     prompt: string,
-    options: { size?: string; model?: string } = {}
-  ): Promise<{ url?: string; b64?: string; error?: string }> {
+    options: { size?: string; model?: string } = {},
+  ): Promise<{ b64?: string; mimeType?: string; error?: string }> {
     const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl].filter(Boolean);
     const model = options.model || 'dall-e-3';
     const size = options.size || '1024x1024';
+    let lastError = '';
 
     for (const baseUrl of endpoints) {
       try {
-        const res = await fetch(`${baseUrl}/images/generations`, {
-          method: 'POST',
-          headers: this.getAuthHeaders(),
-          body: JSON.stringify({
-            prompt,
-            model,
-            n: 1,
-            size,
-            response_format: 'b64_json',
-          }),
+        const image = await generateRelayImage({
+          model: buildRelayImageModel(model, baseUrl, this.cookieHeaders()),
+          prompt,
+          size,
+          apiKey: this.config.apiKey,
           signal: AbortSignal.timeout(30000),
         });
-
-        if (res.ok) {
-          // OpenAI-shaped image response; asserted once at this boundary.
-          const data = (await res.json()) as { data?: Array<{ url?: string; b64_json?: string }> };
-          const item = data.data?.[0];
-          if (item) {
-            return {
-              url: item.url,
-              b64: item.b64_json,
-            };
-          }
+        if (image) {
+          return { b64: image.b64, mimeType: image.mimeType };
         }
-      } catch {
-        // try fallback
+        lastError = 'provider returned no image';
+      } catch (err: unknown) {
+        lastError = err instanceof Error ? err.message : String(err);
       }
     }
     return {
-      error: 'Image generation endpoint unavailable or timed out on relay gateway',
+      error: `Image generation endpoint unavailable or timed out on relay gateway${lastError ? ` (${lastError.slice(0, 200)})` : ''}`,
     };
   }
 
@@ -622,6 +647,11 @@ export class RelayClient {
     }
   }
 
+  private cookieHeaders(): Record<string, string> {
+    const cookie = extractCookie(this.config.cookieFile);
+    return cookie ? { Cookie: cookie } : {};
+  }
+
   async streamChatCompletion(options: ChatCompletionOptions): Promise<ChatCompletionResult> {
     const requestedModel = options.model || this.config.defaultModel;
     const candidateModels = [
@@ -632,6 +662,55 @@ export class RelayClient {
     const endpoints = [this.config.relayUrl, this.config.relayFallbackUrl].filter(Boolean);
     let lastError: unknown = null;
     let streamedToCaller = false;
+
+    // One streamed attempt through the omp engine. `tools` is undefined on the
+    // no-tools retry, and that retry sends tool results as plain user text.
+    const attempt = async (
+      model: string,
+      baseUrl: string,
+      tools: ToolSchema[] | undefined,
+      messages: ChatMessage[],
+    ): Promise<ChatCompletionResult> => {
+      const effort = options.effort || (model.includes(':') ? model.split(':')[1] : undefined);
+      const streamed = await streamRelayCompletion({
+        model: buildRelayChatModel(model, baseUrl, this.cookieHeaders()),
+        context: toPiContext(messages, tools),
+        apiKey: this.config.apiKey,
+        signal: options.signal,
+        effort,
+        onToken: (tok) => {
+          streamedToCaller = true;
+          options.onToken?.(tok);
+        },
+        onReasoning: (res) => options.onReasoning?.(res),
+      });
+
+      let content = streamed.content;
+      const reasoning = streamed.reasoning;
+      const toolCalls = [...streamed.toolCalls];
+
+      if (isModelErrorContent(content) && toolCalls.length === 0) {
+        throw new Error(`Upstream model error: ${content.trim()}`);
+      }
+      if (!content.trim() && reasoning.trim() && toolCalls.length === 0) {
+        content = reasoning;
+      }
+      if (!content.trim() && !reasoning.trim() && toolCalls.length === 0) {
+        throw new Error(`Relay model ${model} returned empty response`);
+      }
+
+      // Tool-call parsing fallback: chat-proxied models (e.g. claude-opus-5-5)
+      // sometimes emit XML or JSON tool calls in plain text instead of native ones.
+      if (toolCalls.length === 0 && content) {
+        const { toolCalls: extracted, cleanedContent } = extractToolCallsFromContent(content);
+        if (extracted.length > 0) {
+          toolCalls.push(...extracted);
+          content = cleanedContent;
+        }
+      }
+
+      return { content, reasoning, toolCalls, model };
+    };
 
     for (let modelIdx = 0; modelIdx < modelsToTry.length; modelIdx++) {
       const model = modelsToTry[modelIdx];
@@ -645,368 +724,26 @@ export class RelayClient {
         }
 
         try {
-          const payload: Record<string, any> = {
-            model,
-            messages: options.messages,
-            stream: true,
-          };
-
-          // Reasoning effort handling
-          const effort = options.effort || (model.includes(':') ? model.split(':')[1] : undefined);
-          if (effort) {
-            payload.reasoning_effort = effort;
-            const lowerModel = model.toLowerCase();
-            if (lowerModel.includes('claude') || lowerModel.includes('opus') || lowerModel.includes('sonnet')) {
-              const budgetMap: Record<string, number> = {
-                max: 64000,
-                xhigh: 32000,
-                high: 16000,
-                medium: 8000,
-                low: 2000,
-              };
-              const budget = budgetMap[effort.toLowerCase()] || 8000;
-              payload.thinking = { type: 'enabled', budget_tokens: budget };
-            }
-          }
-
-          if (options.tools && options.tools.length > 0) {
-            payload.tools = options.tools;
-            payload.tool_choice = 'auto';
-          }
-
-          // Only include temperature if not a reasoning model
-          const isReasoning = model.includes('o1') || model.includes('o3') || model.includes('reasoning');
-          if (!isReasoning && options.temperature !== undefined) {
-            payload.temperature = options.temperature;
-          }
-
-          let res = await fetch(`${baseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: this.getAuthHeaders(),
-            body: JSON.stringify(payload),
-            signal: options.signal,
-          });
-
-          // Transient error retry (429 rate limit or 503/502 gateway blip)
-          if (!res.ok && (res.status === 429 || res.status === 503 || res.status === 502) && !options.signal?.aborted) {
-            await new Promise((r) => setTimeout(r, 600));
-            if (!options.signal?.aborted) {
-              const retryAttempt = await fetch(`${baseUrl}/chat/completions`, {
-                method: 'POST',
-                headers: this.getAuthHeaders(),
-                body: JSON.stringify(payload),
-                signal: options.signal,
-              }).catch(() => null);
-              if (retryAttempt && retryAttempt.ok) {
-                res = retryAttempt;
-              }
-            }
-          }
-
-          // Chat-proxied fallback: if upstream returns 400 Bad Request and tools were present,
-          // retry without tools because web-chat proxies (e.g. claude-opus-5-5) often reject OpenAI tools schema
-          if (!res.ok && res.status === 400 && payload.tools) {
-            const fallbackPayload: Record<string, any> = { ...payload };
-            delete fallbackPayload.tools;
-            delete fallbackPayload.tool_choice;
-            if (fallbackPayload.messages && Array.isArray(fallbackPayload.messages)) {
-              fallbackPayload.messages = fallbackPayload.messages.map((m: ChatMessage) => {
-                if (m.role === 'tool') {
-                  return {
-                    role: 'user',
-                    content: `<tool_response name="${m.name || 'tool'}">\n${m.content}\n</tool_response>`,
-                  };
-                }
-                return m;
-              });
-            }
-            const retryRes = await fetch(`${baseUrl}/chat/completions`, {
-              method: 'POST',
-              headers: this.getAuthHeaders(),
-              body: JSON.stringify(fallbackPayload),
-              signal: options.signal,
-            });
-            if (retryRes.ok) {
-              res = retryRes;
-            }
-          }
-
-          if (!res.ok) {
-            const errText = await res.text().catch(() => '');
-            throw new Error(`Relay HTTP ${res.status}: ${errText.slice(0, 300)}`);
-          }
-
-          if (!res.body) {
-            throw new Error('No response body from relay stream');
-          }
-
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-
-          let content = '';
-          let reasoning = '';
-          let finishReason: string | undefined;
-          const toolCallsMap = new Map<number, { id: string; name: string; args: string }>();
-
-          let inThinkTag = false;
-          let thinkTagBuffer = '';
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const rawLine of lines) {
-              const line = rawLine.trim();
-              if (!line || line.startsWith(':')) continue;
-              if (line === 'data: [DONE]') continue;
-
-              if (line.startsWith('data: ')) {
-                const jsonStr = line.slice(6);
-                try {
-                  const parsed = JSON.parse(jsonStr);
-                  if (parsed.error) {
-                    const errMsg = parsed.error.message || JSON.stringify(parsed.error);
-                    throw new Error(`Relay stream error: ${errMsg}`);
-                  }
-
-                  const choice = parsed.choices?.[0];
-                  if (!choice) continue;
-
-                  if (choice.finish_reason) {
-                    finishReason = choice.finish_reason;
-                  }
-
-                  const delta = choice.delta;
-                  if (!delta) continue;
-
-                  // Failover check for immediate error content delta
-                  if (delta.content && isModelErrorContent(delta.content) && !content) {
-                    throw new Error(`Upstream model error: ${delta.content.trim()}`);
-                  }
-
-                  // Reasoning tokens
-                  const reasonDelta = delta.reasoning_content || delta.reasoning || delta.think;
-                  if (reasonDelta) {
-                    reasoning += reasonDelta;
-                    options.onReasoning?.(reasonDelta);
-                  }
-
-                  // Main content & inline think tags handling (chunk-split resilient)
-                  if (delta.content) {
-                    let text = thinkTagBuffer + delta.content;
-                    thinkTagBuffer = '';
-
-                    while (text.length > 0) {
-                      if (!inThinkTag) {
-                        const openMatch = /<(?:think|thought|reasoning)>/i.exec(text);
-                        if (openMatch) {
-                          const before = text.slice(0, openMatch.index);
-                          if (before) {
-                            content += before;
-                            if (options.onToken) {
-                              streamedToCaller = true;
-                              options.onToken(before);
-                            }
-                          }
-                          inThinkTag = true;
-                          text = text.slice(openMatch.index + openMatch[0].length);
-                        } else {
-                          const trailingPartial = /<(?:\/?[a-zA-Z]*)?$/i.exec(text);
-                          if (trailingPartial && trailingPartial.index < text.length) {
-                            const safe = text.slice(0, trailingPartial.index);
-                            if (safe) {
-                              content += safe;
-                              if (options.onToken) {
-                                streamedToCaller = true;
-                                options.onToken(safe);
-                              }
-                            }
-                            thinkTagBuffer = text.slice(trailingPartial.index);
-                            text = '';
-                          } else {
-                            content += text;
-                            if (options.onToken) {
-                              streamedToCaller = true;
-                              options.onToken(text);
-                            }
-                            text = '';
-                          }
-                        }
-                      } else {
-                        const closeMatch = /<\/(?:think|thought|reasoning)>/i.exec(text);
-                        if (closeMatch) {
-                          const before = text.slice(0, closeMatch.index);
-                          if (before) {
-                            reasoning += before;
-                            options.onReasoning?.(before);
-                          }
-                          inThinkTag = false;
-                          text = text.slice(closeMatch.index + closeMatch[0].length);
-                        } else {
-                          const trailingPartial = /<(?:\/?[a-zA-Z]*)?$/i.exec(text);
-                          if (trailingPartial && trailingPartial.index < text.length) {
-                            const safe = text.slice(0, trailingPartial.index);
-                            if (safe) {
-                              reasoning += safe;
-                              options.onReasoning?.(safe);
-                            }
-                            thinkTagBuffer = text.slice(trailingPartial.index);
-                            text = '';
-                          } else {
-                            reasoning += text;
-                            options.onReasoning?.(text);
-                            text = '';
-                          }
-                        }
-                      }
-                    }
-                  }
-
-                  // Tool calls
-                  if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-                    for (const tc of delta.tool_calls) {
-                      const idx = tc.index ?? 0;
-                      const existing = toolCallsMap.get(idx) || { id: '', name: '', args: '' };
-                      if (tc.id) existing.id = tc.id;
-                      if (tc.function?.name) existing.name += tc.function.name;
-                      if (tc.function?.arguments) existing.args += tc.function.arguments;
-                      toolCallsMap.set(idx, existing);
-                    }
-                  }
-                } catch (parseErr: unknown) {
-                  if (
-                    parseErr instanceof Error &&
-                    (parseErr.message.startsWith('Relay stream error') ||
-                      parseErr.message.startsWith('Upstream model error'))
-                  ) {
-                    throw parseErr;
-                  }
-                  // partial json or parse error
-                }
-              }
-            }
-          }
-
-          if (buffer.trim()) {
-            const trailingLines = buffer.split('\n');
-            for (const rawLine of trailingLines) {
-              const line = rawLine.trim();
-              if (!line || line.startsWith(':') || line === 'data: [DONE]') continue;
-              if (line.startsWith('data: ')) {
-                try {
-                  const parsed = JSON.parse(line.slice(6));
-                  if (parsed.error) {
-                    const errMsg = parsed.error.message || JSON.stringify(parsed.error);
-                    throw new Error(`Relay stream error: ${errMsg}`);
-                  }
-                  const choice = parsed.choices?.[0];
-                  if (choice?.delta) {
-                    const delta = choice.delta;
-                    if (delta.content && isModelErrorContent(delta.content) && !content) {
-                      throw new Error(`Upstream model error: ${delta.content.trim()}`);
-                    }
-                    const reasonDelta = delta.reasoning_content || delta.reasoning || delta.think;
-                    if (reasonDelta) {
-                      reasoning += reasonDelta;
-                      options.onReasoning?.(reasonDelta);
-                    }
-                    if (delta.content) {
-                      content += delta.content;
-                      if (options.onToken) {
-                        streamedToCaller = true;
-                        options.onToken(delta.content);
-                      }
-                    }
-                  }
-                } catch (parseErr: unknown) {
-                  if (
-                    parseErr instanceof Error &&
-                    (parseErr.message.startsWith('Relay stream error') ||
-                      parseErr.message.startsWith('Upstream model error'))
-                  ) {
-                    throw parseErr;
-                  }
-                }
-              }
-            }
-            buffer = '';
-          }
-
-          if (thinkTagBuffer) {
-            if (inThinkTag) {
-              reasoning += thinkTagBuffer;
-              options.onReasoning?.(thinkTagBuffer);
-            } else {
-              content += thinkTagBuffer;
-              if (options.onToken) {
-                streamedToCaller = true;
-                options.onToken(thinkTagBuffer);
-              }
-            }
-            thinkTagBuffer = '';
-          }
-
-          if (isModelErrorContent(content) && toolCallsMap.size === 0) {
-            throw new Error(`Upstream model error: ${content.trim()}`);
-          }
-
-          if (!content.trim() && reasoning.trim() && toolCallsMap.size === 0) {
-            content = reasoning;
-          }
-
-          if (!content.trim() && !reasoning.trim() && toolCallsMap.size === 0) {
-            throw new Error(`Relay model ${model} returned empty response`);
-          }
-
-          const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
-            let parsedArgs = {};
-            try {
-              parsedArgs = JSON.parse(tc.args || '{}');
-            } catch {
-              parsedArgs = { raw: tc.args };
-            }
-            return {
-              id: tc.id || `call_${Math.random().toString(36).slice(2, 9)}`,
-              name: tc.name,
-              arguments: parsedArgs,
-              rawArguments: tc.args,
-            };
-          });
-
-          // Tool-call parsing fallback: If no native tool_calls were emitted, extract from content
-          // This handles chat-proxied models (e.g. claude-opus-5-5, claude-opus-4-8) that emit XML or JSON tool calls
-          if (toolCalls.length === 0 && content) {
-            const { toolCalls: extracted, cleanedContent } = extractToolCallsFromContent(content);
-            if (extracted.length > 0) {
-              toolCalls.push(...extracted);
-              content = cleanedContent;
-            }
-          }
-
-          return {
-            content,
-            reasoning,
-            toolCalls,
-            model,
-            finishReason,
-          };
+          return await attempt(model, baseUrl, options.tools, options.messages);
         } catch (err: unknown) {
           lastError = err;
           if (options.signal?.aborted || streamedToCaller) {
             throw err;
           }
-          if (
-            err instanceof Error &&
-            (err.message.includes('403') ||
-              err.message.includes('USER_BLOCKED') ||
-              err.message.startsWith('Upstream model error'))
-          ) {
-            // Model itself is blocked or rejected across providers — advance to next candidate model immediately
+          const message = err instanceof Error ? err.message : '';
+
+          // Chat-proxied fallback: a 400 with tools present usually means the
+          // proxy rejected the OpenAI tools schema. Retry once without tools.
+          if (options.tools && options.tools.length > 0 && /\b400\b/.test(message)) {
+            try {
+              return await attempt(model, baseUrl, undefined, flattenToolResults(options.messages));
+            } catch (retryErr: unknown) {
+              lastError = retryErr;
+            }
+          }
+
+          if (message.includes('403') || message.includes('USER_BLOCKED') || message.startsWith('Upstream model error')) {
+            // Model itself is blocked or rejected across providers: advance to the next candidate model.
             break;
           }
         }

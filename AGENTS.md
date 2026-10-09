@@ -62,9 +62,10 @@ The codebase is organized under `src/`:
 | [`src/repl.ts`](file:///home/alex/Projects/beurre/src/repl.ts) | Interactive REPL session loop. Manages `editor.readPrompt`, slash command dispatcher (`/models`, `/subagents`, `/loop`, `/think`, `/compact`, `/sessions`, `/resume`, `/whoami`, `/quota`, `/login`, `/logout`, `/diff`, `/copy`, `/export`, etc.), turn execution, and orchestrates `BeurreWorkingBar`. |
 | [`src/editor.ts`](file:///home/alex/Projects/beurre/src/editor.ts) | Terminal editor engine (`BeurreEditor`). Implements Claude Code / OMP prompt bar, 2D cursor coordinate math (`getBuffer2DCoords`), word navigation (`Alt+Left`/`Alt+Right`, `Ctrl+W`), predictive command autocompletion with scrollable floating popover, bracketed paste mode, and Shift+Tab effort cycling. |
 | [`src/theme.ts`](file:///home/alex/Projects/beurre/src/theme.ts) | Butter aesthetic UI primitives: `colors`, `b` styled helpers, `statusBar`, `formatWorkingPromptBar`, `BeurreWorkingBar` (bottom-anchored execution prompt bar), `ButterSpinner`, `formatClaudeToolCall`, `formatClaudeToolResult`, `formatUserMessageCard`, `formatAgentHeader`, `renderErrorCard`, `renderToast`. |
-| [`src/agent.ts`](file:///home/alex/Projects/beurre/src/agent.ts) | `BeurreAgent` core turn loop. Enforces autonomous direct action (mandatory filesystem writes via tools), image model / vision delegation, multi-turn tool loops (up to 25 turns), XML / Anthropic `<invoke>` / Markdown tool-call parsing, and change-tracking protocol. |
-| [`src/relay.ts`](file:///home/alex/Projects/beurre/src/relay.ts) | `RelayClient`. Handles HTTP SSE streaming with Cloudflare Relay Gateway, credential extraction from `cookies.txt` or `models.yml`, model display name mapping (`getModelDisplayName`), and tool call extraction from proxies. |
-| [`src/tools.ts`](file:///home/alex/Projects/beurre/src/tools.ts) | Butter Tool Suite: `read` (line numbers & offsets), `write` (file creation & overwrite), `edit` (surgical find/replace), `bash` (command execution with timeout), `web_search` (Relay search), `generate_image` (AI image generation), `subagent_run` (delegation to named subagents). |
+| [`src/agent.ts`](file:///home/alex/Projects/beurre/src/agent.ts) | `BeurreAgent` compatibility facade over the lightweight `@oh-my-pi/pi-agent-core` loop. Keeps Beurre's callbacks, hooks, session projection, steering, direct filesystem action, text tool-call recovery, and change-tracking protocol. |
+| [`src/relay.ts`](file:///home/alex/Projects/beurre/src/relay.ts) | `RelayClient`. Model/provider discovery and web search over the Cloudflare Relay Gateway, credential extraction from `cookies.txt` or `models.yml`, model failover, and tool call extraction from proxies. Chat and image transport go through `src/pi-transport.ts`. |
+| [`src/pi-transport.ts`](file:///home/alex/Projects/beurre/src/pi-transport.ts) | Seam onto the omp engine (`@oh-my-pi/pi-ai`). `buildRelayChatModel` / `buildRelayImageModel` create relay-backed models (`openai-completions`, `openai-images`), `toPiContext` converts beurre history into a pi-ai context, `streamRelayCompletion` collects text, reasoning and native tool calls, `generateRelayImage` returns base64 image data. |
+| [`src/tools.ts`](file:///home/alex/Projects/beurre/src/tools.ts) | Butter Tool Suite plus the `createOmpTools` adapter: `read` (line numbers & offsets), `write` (file creation & overwrite), `edit` (surgical find/replace), `bash` (command execution with timeout), `web_search` (Relay search), `generate_image` (AI image generation), `subagent_run` (delegation to named subagents). |
 | [`src/subagents.ts`](file:///home/alex/Projects/beurre/src/subagents.ts) | Named subagent definitions and isolated execution runner (`runNamedSubagent`). |
 | [`src/loop.ts`](file:///home/alex/Projects/beurre/src/loop.ts) | `BeurreLoopRunner`. Orchestrates indefinite prompt loops, auto-compacts preceding turns with Butter Melt, and drives turns with `BeurreWorkingBar`. |
 | [`src/compact.ts`](file:///home/alex/Projects/beurre/src/compact.ts) | `compactMessages` Butter Melt compactor. Summarizes history while retaining crucial file modification records and test results. |
@@ -630,3 +631,53 @@ All tests must pass with **100% green status** (0 failures).
   - Ran `bun test`: All 883 tests across 22 test files passed with 0 failures.
   - Added unit tests in `tests/cl-improvements.test.ts` covering steering history recall, word jumping, SS3 arrow keys, error discrimination, and markdown trimming.
 
+### [2026-10-09] — Rebuild Transport on omp (`pi-ai`), Relay as Provider, Drop pi-tui
+- **Author/Agent:** Buffy (Codebuff) on behalf of alex
+- **Why:** beurre was built on `@oh-my-pi/pi-tui` and a hand-rolled SSE client. The request was to base the engine on omp, keep the Relay Gateway as the provider, get native image generation, and stay lightweight.
+- **Files Modified:**
+  - `src/pi-transport.ts` (new): relay models built with pi-catalog `buildModel`; history conversion; streamed chat via pi-ai `streamSimple`; image generation via pi-ai `generateImage` (`openai-images`).
+  - `src/relay.ts`: `streamChatCompletion` now delegates the wire protocol to pi-ai. Model failover, endpoint fallback, the 403/USER_BLOCKED and upstream-error advance rules, the no-tools 400 retry, and text tool-call extraction are kept. `generateImage` returns `{ b64, mimeType }`.
+  - `src/tools.ts`: `generate_image` picks the default file extension from the MIME type (providers often return JPEG).
+  - `src/markdown.ts`: pi-tui highlighter and `Markdown` renderer removed. Code uses the regex highlighter. Prose is passed through as plain text, so markdown emphasis and lists are no longer rendered.
+  - `package.json`: `@oh-my-pi/pi-tui` replaced by `@oh-my-pi/pi-ai` and `@oh-my-pi/pi-catalog` (both already installed via the global omp install, 18.6.1).
+  - `tests/pi-transport.test.ts` (new): history conversion, streamed reasoning/text/tool calls with the request URL and auth header, and image generation.
+  - `AGENTS.md`: module table updated.
+- **Verification:**
+  - `bun test`: 886 passing, 0 failing (883 existing + 3 new).
+  - Live relay smoke tests via `beurre -p`: chat (`pong`), native tool call (`read` on a file), and `generate_image` (1024x1024 JPEG written to `assets/`).
+  - Startup peak RSS: ~65 MB before, ~90 MB after. For comparison, importing omp's `pi-coding-agent` alone is ~230 MB.
+   - Typecheck: `tsc` lacks `@types/bun` and `@types/node` on this host, so full checking is not possible. Known pre-existing issue: `src/relay.ts` `loadFallbackCatalog` uses `path`/`os`/`fs` without importing them; the failure is swallowed by its try/catch.
+
+### [2026-10-09] — Embed the Lightweight omp Agent Core in Beurre
+- **Author/Agent:** OmniRush.ai
+- **Why:** Keep Beurre's small terminal/UI surface while replacing its main hand-written turn/tool loop with the reusable OMP agent core. The full `omp` coding-agent/TUI package is not imported, so Relay remains the only provider and OMP's unrelated features do not become runtime baggage.
+- **Files Modified:**
+  - `src/agent.ts`: `BeurreAgent` now hosts `@oh-my-pi/pi-agent-core` with Relay-backed models, native OMP streaming events, OMP steering/abort behavior, tool lifecycle callbacks, hook gates, legacy session projection, and text-emitted tool-call recovery.
+  - `src/tools.ts`: added `createOmpTools`, adapting the existing seven-tool Beurre surface to OMP's validated `AgentTool` contract without importing the full coding-agent bundle.
+  - `tests/omp-agent.test.ts`: verifies the seven-tool roster and OMP-shaped read result without contacting Relay.
+  - `src/relay.ts`: added the Relay model/key accessors used by the embedded OMP agent and restored the missing filesystem imports for fallback catalog loading.
+  - `package.json` / `bun.lock`: added the pinned `@oh-my-pi/pi-agent-core` dependency only; `pi-tui` and `pi-coding-agent` remain excluded.
+  - `AGENTS.md`: documented the embedded-core boundary and adapter.
+- **Verification:**
+  - `bun test`: 887 passing, 0 failing across 24 files.
+  - `bun build src/index.ts --target bun --outdir /tmp/beurre-build-check-20261009`: passed; bundled entry was 16.53 MB.
+  - Live Relay smoke checks: exact `pong` response and a native OMP `read(package.json)` tool call both completed with exit status 0.
+  - Live image smoke: Relay-backed `generate_image` completed through the OMP tool adapter in `/tmp/beurre-image-smoke-20261009`, producing a 1024x1024 JPEG at `generated-smoke.png`; the separate `gpt-4o` chat-model attempt was correctly rejected by Relay as model-disabled and was not treated as a code failure.
+  - `bun install --offline`: passed and generated the reproducible `bun.lock` with OMP core dependencies.
+  - `bunx tsc --noEmit`: still unavailable as a clean check on this host because the repository's TypeScript config references missing `bun-types` and uses removed `downlevelIteration`; this is not counted as a pass.
+
+### [2026-10-09] — Compact OMP-Style Startup TUI and Clean Prompt Footer
+- **Author/Agent:** OmniRush.ai
+- **Why:** The first OMP-core pass changed the runtime but left the old oversized Beurre banner in place. In the real terminal it still looked like the old UI, with a large logo/gulf of whitespace, a split `model`/`effort` header, and a clipped `shift+tab e…` footer.
+- **Files Modified:**
+  - `src/theme.ts`: replaced the multi-row startup banner with a compact inline headline containing Beurre version, model, effort, cwd, branch, and complete command hints.
+  - `src/editor.ts`: extracted `formatPromptFooter` and chooses a complete hint tier based on plain display widths, preventing mid-word ellipsis in the footer.
+  - `tests/theme.test.ts` / `tests/editor.test.ts`: updated banner contracts and added a regression test for the readable prompt footer.
+  - External local install metadata: removed duplicate `beurre` keys from Bun's global package manifest so startup no longer prints duplicate-key warnings. No credential values were logged or copied.
+- **Verification:**
+  - Focused UI tests: 57 passing, 0 failing (`tests/editor.test.ts`, `tests/theme.test.ts`).
+  - Full suite: 888 passing, 0 failing across 24 files.
+  - `git diff --check`: passed.
+  - `bun build src/index.ts --target bun --outdir /tmp/beurre-build-check-20261009-final`: passed; 579 modules, 16.53 MB.
+  - Clean tmux TTY smoke: compact header/footer rendered without the duplicate-key warning, then Ctrl+C exited the interactive session cleanly.
+  - Real TTY smoke: startup now renders a compact three-line header and `esc • tab complete • shift+tab` footer with no duplicate-key warning.

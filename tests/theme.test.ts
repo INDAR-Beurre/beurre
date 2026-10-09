@@ -407,16 +407,16 @@ describe('banner', () => {
     });
   }
 
-  it('right-aligns the model and effort columns to the same margin', () => {
+  it('keeps model and effort metadata compact on one headline', () => {
     const prev = process.stdout.columns;
     process.stdout.columns = 80;
     const lines = stripAnsi(banner('1.0.0', 'glm-5-3-flash', '/home/alex/Projects/beurre', 'high')).split('\n');
     process.stdout.columns = prev;
-    const model = lines.find((l) => l.includes('model'));
-    const effort = lines.find((l) => l.includes('effort'));
-    expect(model).toBeDefined();
-    expect(effort).toBeDefined();
-    expect(model!.length).toBe(effort!.length);
+    expect(lines[0]).toContain('beurre v1.0.0');
+    expect(lines[0]).toContain('GLM 5.3 Flash');
+    expect(lines[0]).toContain('high');
+    expect(lines[0]).not.toContain('model  ');
+    expect(lines[0]).not.toContain('effort  ');
   });
 
   it('drops the model id and shortens hints on a narrow terminal', () => {
@@ -478,13 +478,17 @@ describe('the Beurre mark', () => {
     process.stdout.columns = prev;
   });
 
-  it('appears in the banner only when the row has room', () => {
+  it('keeps the startup banner compact instead of spending rows on the logo', () => {
     const prev = process.stdout.columns;
     process.stdout.columns = 40;
-    expect(banner()).not.toContain('▄');
+    const narrow = banner().split('\n');
     process.stdout.columns = 100;
-    expect(banner()).toContain('▄');
+    const wide = banner().split('\n');
     process.stdout.columns = prev;
+    expect(narrow.length).toBe(3);
+    expect(wide.length).toBe(3);
+    expect(narrow.join('\n')).not.toContain('▄');
+    expect(wide.join('\n')).not.toContain('▄');
   });
 
   it('never overflows the terminal, at any width', () => {

@@ -43,6 +43,8 @@
 
 Running natively on Bun with sub-15ms cold start times, Beurre bridges state-of-the-art reasoning models directly into your terminal. It features continuous tool execution, real-time reasoning drawers, anchored bottom prompt bars with mid-flight user steering, and deep integration with the **Model Aggregator** and its Cloudflare Relay Gateway.
 
+The runtime uses the lightweight OMP agent core (`@oh-my-pi/pi-agent-core`) for the turn loop, native streaming events, tool dispatch, and steering. It does **not** embed the full `omp` coding-agent/TUI application: Relay is the provider boundary, and Beurre keeps only its small local tool surface and terminal UI.
+
 ```text
 🧈 ╭────────────────────────────────────────────────────────────────────────────╮
    │  B E U R R E  v1.0.0 — L'Agent Fondant & Autonome                           │
@@ -119,6 +121,10 @@ beurre --models
   - Seamless Server-Sent Events (SSE) streaming with reasoning token demarcation (`thinkMs`, `delta.reasoning`).
   - Direct web search via Relay (`POST /v1/web_search`).
   - Auto-reads session credentials from `~/model-aggregator/cookies.txt` or `~/.omp/agent/models.yml`.
+- **🪶 Lightweight OMP Core**:
+  - Uses OMP's agent loop and native tool/event contracts without loading the full OMP CLI, TUI, provider catalogue, or optional feature set.
+  - Keeps Relay as the single chat, search, and image provider boundary.
+  - Retains native Relay-backed image generation through the OpenAI-compatible image transport and saves provider-correct MIME extensions locally.
 - **📎 Smart `@` File Context Inlining**:
   - Type `@src/...` to open an interactive file & folder search popover.
   - Referenced files (<50KB) are automatically inlined directly into prompt context, eliminating redundant exploratory tool calls.

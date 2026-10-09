@@ -159,28 +159,16 @@ export function banner(version = BEURRE_VERSION, model = 'glm-5-3-flash', cwd = 
   const git = getGitStatus(cwd);
   const gitTag = git.branch ? `  ${git.branch}${git.isDirty ? '*' : ''}` : '';
   const modelName = getModelDisplayName(model);
-
-  // Fixed label column. `columns()` right-aligns its right argument, so the
-  // model was drifting against the margin instead of lining up, and the
-  // `width - 34` guess truncated it mid-word ("glm-5…").
-  const LABEL = 9;
-  const room = Math.max(8, width - LABEL - 2);
-  // `line()` used to hand-roll this and computed its padding gap from `width`
-  // *before* slicing the already-truncated left, so at 84 columns the slice
-  // ate the separating space entirely and the header read
-  // "beurre v1.0.0model  GLM…". `columns()` is the shared layer for exactly
-  // this and gets it right; duplicating it is what broke.
-  const line = (left: string, right = '') =>
-    right ? columns(` ${left}`, right, width, 1) : truncate(` ${left}`, width);
-
   const wordmark = `${colors.bold}${colors.butterGold}beurre${colors.reset}`;
-  const rule = `${colors.mutedBox}${'─'.repeat(Math.max(0, width - 1))}${colors.reset}`;
+  const separator = `${colors.mutedBox}·${colors.reset}`;
 
-  // Below ~64 columns the model id is noise: keep the display name only.
-  const modelField = width < 64 ? modelName : `${modelName} (${model})`;
-  // Each hint is picked by whether it *fits*, not by a guessed breakpoint. The
-  // old hardcoded tiers truncated a 28-character hint at 24 columns, rendering
-  // it as `Type a task.  /menu  /…` — a command name clipped past recognition.
+  // Keep startup chrome compact and inline. The old banner used a three-row
+  // logo and independently right-aligned columns, leaving a large empty gulf
+  // in wide terminals and making the prompt feel unlike the compact OMP UI.
+  const headline = ` ${wordmark} ${colors.dim}v${version}${colors.reset}  ${separator}  ${colors.butterCream}${truncate(modelName, Math.max(8, width - 38))}${colors.reset}  ${separator}  ${colors.dim}${effort}${colors.reset}`;
+  const context = ` ${colors.dim}${truncate(`${formatShortCwd(cwd)}${gitTag}`, Math.max(6, width - 1))}${colors.reset}`;
+
+  // Pick a complete hint tier; never slice a command name at the right edge.
   const hintTiers = [
     'Type a task and press Enter.  /menu settings  /models switch  /help all commands',
     'Type a task and press Enter.  /menu settings  /help',
@@ -188,53 +176,8 @@ export function banner(version = BEURRE_VERSION, model = 'glm-5-3-flash', cwd = 
     '/menu  /help',
   ];
   const hints = hintTiers.find((h) => h.length + 1 <= width) ?? '/help';
-
-
-  // The mark is drawn in the gutter beside the first two content rows, so the
-  // banner keeps exactly the height it had before the logo existed. It only
-  // appears when the row can hold the mark, the wordmark and the full model
-  // name without truncating any of them: a mark that costs the user half
-  // their model id is chrome, not identity.
-  //
-  // The gutter is reserved BEFORE layout, not prepended afterwards. `line()`
-  // already pads its result out to the full width, so splicing 9 columns of
-  // mark in afterwards pushed every row 9 columns past the right margin.
-  const modelText = `model  ${modelField}`;
-  const showMark = width >= LOGO_GUTTER + 22 + modelText.length;
-  const mark = showMark ? logoMark() : null;
-  const rowWidth = width - (mark ? LOGO_GUTTER : 0);
-  // Every marked row uses the same gutter so the three rows of the mark share
-  // one left edge. `row()` prepends a single space, so the mark body starts at
-  // column 1 and the content column matches what the unmarked banner uses.
-  const row = (i: number, body: string) => (mark ? ` ${mark[i]}  ${body}` : body);
-
-  const rows = [
-    '',
-    rule,
-    // The mark spans the three rows it can share with real content: the
-    // wordmark line, the cwd line, and the empty line under them. Spanning
-    // three rows instead of two is what lets the melted bottom actually be
-    // drawn instead of silently clipped away.
-    row(0, columns(
-      ` ${wordmark} ${colors.dim}v${version}${colors.reset}`,
-      `${colors.dim}${truncate(modelText, Math.max(4, room - 20))}${colors.reset}`,
-      rowWidth,
-      1,
-    )),
-    row(1, columns(
-      ` ${colors.dim}${truncate(`${formatShortCwd(cwd)}${gitTag}`, room)}${colors.reset}`,
-      `${colors.dim}effort  ${effort}${colors.reset}`,
-      rowWidth,
-      1,
-    )),
-    mark ? ` ${mark[2]}` : '',
-    '',
-    `${colors.dim} ${truncate(hints, width - 1)}${colors.reset}`,
-    rule,
-    '',
-  ];
-
-  return rows.join('\n');
+  const fit = (line: string): string => truncate(line, Math.max(1, width));
+  return [fit(headline), fit(context), fit(`${colors.dim} ${hints}${colors.reset}`)].join('\n');
 }
 
 export function renderErrorCard(title: string, message: string): string {
@@ -1321,4 +1264,3 @@ export class BeurreWorkingBar {
     this.renderInitialBar();
   }
 }
-

@@ -7,10 +7,24 @@ import {
   findWordBoundaryRight,
   createInitialEditorState,
   handleKeyStroke,
+  formatPromptFooter,
 } from '../src/editor.ts';
 import { getPredictiveMatches } from '../src/predictive.ts';
 
 describe('BeurreEditor Engine', () => {
+  it('keeps the prompt footer readable instead of truncating a hint mid-word', () => {
+    const footer = formatPromptFooter({
+      cols: 80,
+      model: 'vsllm/qwen3.8-max-0902',
+      effort: 'high',
+      quotaText: '∞',
+      user: 'admin',
+    });
+
+    expect(footer).toContain('tab complete');
+    expect(footer).not.toContain('…');
+  });
+
   it('should initialize with initial history', () => {
     const editor = new BeurreEditor(['/help', '/models']);
     const history = editor.getHistory();

@@ -1,5 +1,4 @@
 import { colors, b } from './theme.ts';
-import { highlightCode, Markdown, getMarkdownTheme } from '@oh-my-pi/pi-tui';
 import { box, stringWidth, stripAnsi, truncate } from './layout.ts';
 
 export interface MarkdownOptions {
@@ -7,19 +6,9 @@ export interface MarkdownOptions {
 }
 
 // Custom code syntax highlighting with warm butter tones
-export function highlightCodeBlock(code: string, lang = ''): string[] {
-  const language = lang.trim().toLowerCase();
-  try {
-    // Attempt pi-tui highlightCode
-    const highlighted = highlightCode(code, language);
-    if (highlighted && highlighted.length > 0) {
-      return highlighted;
-    }
-  } catch {
-    // fallback to regex highlighter
-  }
-
-  // Fallback keyword and literal regex highlighter in butter palette
+export function highlightCodeBlock(code: string, _lang = ''): string[] {
+  // Keyword and literal regex highlighter in the butter palette. The language
+  // hint is not used: the pi-tui native highlighter was dropped with the dependency.
   const lines = code.split('\n');
   return lines.map((line) => {
     let out = line;
@@ -57,12 +46,8 @@ export function renderMarkdownBlock(text: string, options: MarkdownOptions = {})
   while ((match = fenceRegex.exec(text)) !== null) {
     const preText = text.slice(lastIndex, match.index);
     if (preText.trim()) {
-      try {
-        const md = new Markdown(preText.trim(), 0, 0, getMarkdownTheme());
-        parts.push(md.render(cols).map((l) => l.trimEnd()).join('\n'));
-      } catch {
-        parts.push(preText.trim());
-      }
+      // Prose is passed through as plain text: pi-tui's Markdown renderer was dropped with the dependency.
+      parts.push(preText.trim());
     }
 
     const lang = match[1] || 'code';
@@ -85,12 +70,7 @@ export function renderMarkdownBlock(text: string, options: MarkdownOptions = {})
 
   const remaining = text.slice(lastIndex);
   if (remaining.trim()) {
-    try {
-      const md = new Markdown(remaining.trim(), 0, 0, getMarkdownTheme());
-      parts.push(md.render(cols).map((l) => l.trimEnd()).join('\n'));
-    } catch {
-      parts.push(remaining.trim());
-    }
+    parts.push(remaining.trim());
   }
 
   return parts.join('\n\n');

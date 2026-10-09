@@ -38,6 +38,37 @@ export interface FileMatchInfo {
 
 const workspaceFilesCache = new Map<string, { files: string[]; timestamp: number }>();
 
+/** Render the compact prompt footer without cutting a hint in the middle. */
+export function formatPromptFooter(options: {
+  cols: number;
+  model?: string;
+  effort?: string;
+  quotaText?: string;
+  user?: string;
+}): string {
+  const width = Math.max(20, options.cols);
+  const modelName = options.model ? getModelDisplayName(options.model) : 'Beurre';
+  const effortTag = (options.effort || 'high').toLowerCase();
+  const rightStatus = [options.user, modelName, effortTag, options.quotaText]
+    .filter(Boolean)
+    .join(` ${colors.dim}·${colors.reset} `);
+  const candidates = [
+    ['esc to cancel', 'tab complete', 'shift+tab effort'],
+    ['esc', 'tab complete', 'shift+tab'],
+    ['esc', 'tab', 'shift+tab'],
+    ['esc', 'tab'],
+    ['esc'],
+  ];
+
+  for (const parts of candidates) {
+    const left = parts.join('  •  ');
+    if (stringWidth(left) + stringWidth(rightStatus) + 2 <= width) {
+      return columns(`${colors.dim}${left}${colors.reset}`, rightStatus, width);
+    }
+  }
+  return columns(`${colors.dim}esc${colors.reset}`, rightStatus, width);
+}
+
 export function getWorkspaceFiles(cwd = process.cwd()): string[] {
   const now = Date.now();
   const cached = workspaceFilesCache.get(cwd);
@@ -980,30 +1011,13 @@ export class BeurreEditor {
 
           drawnLines.push(`${colors.mutedBox}${'─'.repeat(cols)}${colors.reset}`);
 
-          // Bottom status line. The old version hand-rolled a seven-step ladder
-          // of if-blocks and, as a last resort, sliced the raw string — which
-          // cuts ANSI escapes in half and corrupts the terminal. `columns()`
-          // already fits both halves to the width, so there is no ladder.
-          const modelName = options.model ? getModelDisplayName(options.model) : 'Beurre';
-          const effortTag = currentEffort.toLowerCase();
-          const rightStatus = [options.user, modelName, effortTag, options.quotaText]
-            .filter(Boolean)
-            .join(` ${colors.dim}·${colors.reset} `);
-          const hintFor = (width: number): string => {
-            const full = ['esc to cancel', 'tab complete', 'shift+tab effort'];
-            const short = ['esc', 'tab', 'shift+tab'];
-            // Drop hints from the right until the row fits, then shorten them.
-            for (let n = full.length; n > 0; n--) {
-              const row = columns(
-                `${colors.dim}${full.slice(0, n).join('  •  ')}${colors.reset}`,
-                rightStatus,
-                cols,
-              );
-              if (stringWidth(row) <= width) return row;
-            }
-            return columns(`${colors.dim}${short.join(' • ')}${colors.reset}`, rightStatus, cols);
-          };
-          drawnLines.push(hintFor(cols));
+          drawnLines.push(formatPromptFooter({
+            cols,
+            model: options.model,
+            effort: currentEffort,
+            quotaText: options.quotaText,
+            user: options.user,
+          }));
 
           // Autocomplete floating box with smooth scrolling
           if (state.autocompleteMatches.length > 0) {

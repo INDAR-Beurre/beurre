@@ -1,8 +1,110 @@
 import { loadConfig } from './config.ts';
-import { relay, type ChatCompletionResult, type ChatMessage } from './relay.ts';
-import { BEURRE_TOOLS, executeTool, type ToolResult } from './tools.ts';
+import { relay, extractToolCallsFromContent, type ChatMessage } from './relay.ts';
+import { createOmpTools } from './tools.ts';
 import { runHook } from './features2.ts';
-import { b, colors } from './theme.ts';
+import { Agent as OmpAgent, type AgentEvent, type AgentMessage, type AgentToolResult } from '@oh-my-pi/pi-agent-core';
+import type { AssistantMessage, Effort, Message, Model } from '@oh-my-pi/pi-ai';
+
+const EMPTY_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function textFromContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((block): block is { type: 'text'; text: string } => {
+      return Boolean(block && typeof block === 'object' && (block as { type?: unknown }).type === 'text' && typeof (block as { text?: unknown }).text === 'string');
+    })
+    .map((block) => block.text)
+    .join('');
+}
+
+function parseToolArguments(raw: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(raw || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function toOmpMessage(message: ChatMessage, model: Model): Message | null {
+  const timestamp = Date.now();
+  if (message.role === 'system') return null;
+  if (message.role === 'user') {
+    return { role: 'user', content: message.content, timestamp };
+  }
+  if (message.role === 'tool') {
+    return {
+      role: 'toolResult',
+      toolCallId: message.tool_call_id || `legacy_${timestamp}`,
+      toolName: message.name || 'tool',
+      content: [{ type: 'text', text: message.content }],
+      isError: false,
+      timestamp,
+    };
+  }
+
+  const content: AssistantMessage['content'] = [];
+  if (message.content) content.push({ type: 'text', text: message.content });
+  for (const call of message.tool_calls || []) {
+    content.push({
+      type: 'toolCall',
+      id: call.id,
+      name: call.function.name,
+      arguments: parseToolArguments(call.function.arguments),
+    });
+  }
+  return {
+    role: 'assistant',
+    content,
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: EMPTY_USAGE,
+    stopReason: message.tool_calls?.length ? 'toolUse' : 'stop',
+    timestamp,
+  };
+}
+
+function toChatMessage(message: AgentMessage): ChatMessage | null {
+  if (message.role === 'user') {
+    return { role: 'user', content: textFromContent(message.content) };
+  }
+  if (message.role === 'assistant') {
+    const text = textFromContent(message.content);
+    const toolCalls = message.content
+      .filter((block): block is Extract<AssistantMessage['content'][number], { type: 'toolCall' }> => block.type === 'toolCall')
+      .map((call) => ({
+        id: call.id,
+        type: 'function' as const,
+        function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+      }));
+    return {
+      role: 'assistant',
+      content: text,
+      ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+    };
+  }
+  if (message.role === 'toolResult') {
+    return {
+      role: 'tool',
+      name: message.toolName,
+      tool_call_id: message.toolCallId,
+      content: textFromContent(message.content),
+    };
+  }
+  // Developer messages are an OMP-internal compatibility detail. They are
+  // already present in the embedded agent's context and do not belong in the
+  // legacy cloud/session projection.
+  return null;
+}
 
 export interface AgentCallbacks {
   onToken?: (token: string) => void;
@@ -23,15 +125,18 @@ export interface AgentOptions {
 
 export class BeurreAgent {
   private config = loadConfig();
-  private messages: ChatMessage[] = [];
   private cwd: string;
   private currentModel: string;
   private effort: string = 'high';
   private sessionId: string;
   private autoSync: boolean;
   private steeringQueue: string[] = [];
-  private currentStepAbortController: AbortController | null = null;
   private isRunningTurn: boolean = false;
+  private readonly ompAgent: OmpAgent;
+  private activeCallbacks: AgentCallbacks | null = null;
+  private activeResponse = '';
+  private activeError: string | null = null;
+  private readonly systemPrompt: string;
 
   constructor(options: AgentOptions = {}) {
     this.cwd = options.cwd || process.cwd();
@@ -104,15 +209,51 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
 - Record the exact files touched, the substance and rationale of the changes, and verification test outcomes.
 - This ensures all future models, tools, and subagents reading AGENTS.md will instantly know what changes were made and how the codebase currently works!`;
 
-    this.messages.push({ role: 'system', content: systemPrompt });
+    this.systemPrompt = systemPrompt;
+    this.ompAgent = new OmpAgent({
+      initialState: {
+        systemPrompt: [systemPrompt],
+        model: relay.buildChatModel(this.currentModel),
+        tools: createOmpTools(this.cwd, () => ({
+          onOutput: (chunk) => this.activeCallbacks?.onToolOutput?.(chunk),
+        })),
+      },
+      cwd: this.cwd,
+      sessionId: this.sessionId,
+      getApiKey: () => relay.getApiKey() || undefined,
+      beforeToolCall: (context) => {
+        const pre = runHook('pre-tool', context.tool.name, { tool_input: context.args });
+        return pre.denied ? { block: true, reason: pre.reason || 'blocked by a pre-tool hook' } : undefined;
+      },
+      afterToolCall: (context) => this.decorateToolResult(context.toolCall.name, context.result, context.args),
+      transformAssistantMessage: (message) => this.recoverTextToolCalls(message),
+    });
+    this.ompAgent.setThinkingLevel(this.effort as Effort);
+    this.ompAgent.subscribe((event) => this.handleOmpEvent(event));
   }
 
   getMessages(): ChatMessage[] {
-    return this.messages;
+    const messages: ChatMessage[] = [];
+    if (this.ompAgent.state.systemPrompt.length > 0) {
+      messages.push({ role: 'system', content: this.ompAgent.state.systemPrompt.join('\n\n') });
+    }
+    for (const message of this.ompAgent.state.messages) {
+      const projected = toChatMessage(message);
+      if (projected) messages.push(projected);
+    }
+    return messages;
   }
 
   setMessages(messages: ChatMessage[]) {
-    this.messages = messages;
+    const system = messages.filter((message) => message.role === 'system').map((message) => message.content);
+    if (system.length > 0) this.ompAgent.setSystemPrompt(system);
+    const model = this.ompAgent.state.model;
+    const converted = messages
+      .filter((message) => message.role !== 'system')
+      .map((message) => toOmpMessage(message, model))
+      .filter((message): message is Message => message !== null);
+    this.ompAgent.clearAllQueues();
+    this.ompAgent.replaceMessages(converted);
   }
 
   getModel(): string {
@@ -124,6 +265,8 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
     if (modelId.includes(':')) {
       this.effort = modelId.split(':')[1];
     }
+    this.ompAgent.setModel(relay.buildChatModel(modelId));
+    this.ompAgent.setThinkingLevel(this.effort as Effort);
   }
 
   getEffort(): string {
@@ -132,6 +275,7 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
 
   setEffort(effort: string) {
     this.effort = effort;
+    this.ompAgent.setThinkingLevel(effort as Effort);
   }
 
   getCwd(): string {
@@ -144,6 +288,7 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
 
   setSessionId(id: string): void {
     this.sessionId = id;
+    this.ompAgent.sessionId = id;
   }
 
   resetSession(newModel?: string): string {
@@ -151,8 +296,10 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
     if (newModel) {
       this.setModel(newModel);
     }
-    const system = this.messages.find((m) => m.role === 'system');
-    this.messages = system ? [system] : [];
+    this.ompAgent.reset();
+    this.ompAgent.setSystemPrompt([this.systemPrompt]);
+    this.ompAgent.sessionId = this.sessionId;
+    this.steeringQueue = [];
     return this.sessionId;
   }
 
@@ -160,9 +307,7 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
     const trimmed = message.trim();
     if (!trimmed) return;
     this.steeringQueue.push(trimmed);
-    if (this.currentStepAbortController) {
-      this.currentStepAbortController.abort('steer');
-    }
+    this.ompAgent.steer({ role: 'user', content: trimmed, steering: true, timestamp: Date.now() });
   }
 
   getSteeringQueue(): string[] {
@@ -170,229 +315,138 @@ CRITICAL AGENT CHANGE-TRACKING PROTOCOL (HIGHEST PRIORITY):
   }
 
   isTurnRunning(): boolean {
-    return this.isRunningTurn;
+    return this.isRunningTurn || this.ompAgent.state.isStreaming;
   }
 
   async runTurn(prompt: string, callbacks: AgentCallbacks = {}, signal?: AbortSignal): Promise<string> {
-    this.messages.push({ role: 'user', content: prompt });
-    this.isRunningTurn = true;
+    if (signal?.aborted) return '';
 
-    let finalResponse = '';
-    let turnCount = 0;
-    const maxTurns = 25;
+    this.isRunningTurn = true;
+    this.activeCallbacks = callbacks;
+    this.activeResponse = '';
+    this.activeError = null;
+    callbacks.onStatus?.('🧈 Whipping up solution...');
+
+    const onAbort = () => this.ompAgent.abort(signal?.reason);
+    signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
-      while (turnCount < maxTurns) {
-        turnCount++;
-        if (signal?.aborted) break;
-
-        // Drain any pending steering messages before starting completion
-        const pendingSteer: string[] = [];
-        while (this.steeringQueue.length > 0) {
-          pendingSteer.push(this.steeringQueue.shift()!);
-        }
-        if (pendingSteer.length > 0) {
-          callbacks.onStatus?.('Steering agent...');
-          const combined = pendingSteer.join('\n\n');
-          if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
-            this.messages[this.messages.length - 1].content += '\n\n' + combined;
-          } else {
-            this.messages.push({ role: 'user', content: combined });
-          }
-        }
-
-        callbacks.onStatus?.('🧈 Whipping up solution...');
-
-        // Step abort controller chained to outer signal
-        this.currentStepAbortController = new AbortController();
-        const stepSignal = this.currentStepAbortController.signal;
-        const onOuterAbort = () => this.currentStepAbortController?.abort();
-        signal?.addEventListener('abort', onOuterAbort, { once: true });
-
-        let assistantContent = '';
-        let result: ChatCompletionResult | null = null;
-        let wasSteered = false;
-
-        try {
-          result = await relay.streamChatCompletion({
-            model: this.currentModel,
-            effort: this.effort,
-            messages: this.messages,
-            tools: BEURRE_TOOLS,
-            signal: stepSignal,
-            onToken: (tok) => {
-              assistantContent += tok;
-              callbacks.onToken?.(tok);
-            },
-            onReasoning: (res) => {
-              callbacks.onReasoning?.(res);
-            },
-          });
-          if (result.model && result.model !== this.currentModel) {
-            this.currentModel = result.model;
-          }
-        } catch (err: unknown) {
-          if (signal?.aborted) {
-            throw err;
-          }
-          if (stepSignal.aborted && (this.steeringQueue.length > 0 || stepSignal.reason === 'steer')) {
-            wasSteered = true;
-          } else {
-            throw err;
-          }
-        } finally {
-          signal?.removeEventListener('abort', onOuterAbort);
-          this.currentStepAbortController = null;
-        }
-
-        if (wasSteered || this.steeringQueue.length > 0) {
-          if (assistantContent.trim()) {
-            this.messages.push({
-              role: 'assistant',
-              content: assistantContent,
-            });
-          } else if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
-            this.messages.push({
-              role: 'assistant',
-              content: '[Turn interrupted by user steering before response generation]',
-            });
-          }
-          const steerMsgs: string[] = [];
-          while (this.steeringQueue.length > 0) {
-            steerMsgs.push(this.steeringQueue.shift()!);
-          }
-          if (steerMsgs.length > 0) {
-            this.messages.push({ role: 'user', content: steerMsgs.join('\n\n') });
-          }
-          callbacks.onStatus?.('Steering agent...');
-          continue;
-        }
-
-        if (!result) break;
-
-        finalResponse = assistantContent || result.content;
-
-        if (!result.toolCalls || result.toolCalls.length === 0) {
-          // Model concluded turn without further tool calls
-          this.messages.push({
-            role: 'assistant',
-            content: finalResponse,
-          });
-
-          // Check if user steered right at the end of turn
-          if (this.steeringQueue.length > 0) {
-            const steerMsgs: string[] = [];
-            while (this.steeringQueue.length > 0) {
-              steerMsgs.push(this.steeringQueue.shift()!);
-            }
-            if (steerMsgs.length > 0) {
-              this.messages.push({ role: 'user', content: steerMsgs.join('\n\n') });
-            }
-            continue;
-          }
-
-          break;
-        }
-
-        // Record assistant message with tool calls
-        this.messages.push({
-          role: 'assistant',
-          content: finalResponse,
-          tool_calls: result.toolCalls.map((tc) => ({
-            id: tc.id,
-            type: 'function',
-            function: {
-              name: tc.name,
-              arguments: tc.rawArguments,
-            },
-          })),
-        });
-
-        // Execute tool calls
-        for (const tc of result.toolCalls) {
-          if (signal?.aborted) break;
-
-          // Hooks ported from Claude Code. The pre-tool handler can veto the
-          // call by returning a deny decision; the post-tool handler sees the
-          // result. Placing both here means one guard covers every tool, the
-          // same way the permission check does.
-          const pre = runHook('pre-tool', tc.name, { tool_input: tc.arguments });
-          if (pre.denied) {
-            const reason = pre.reason || 'blocked by a pre-tool hook';
-            this.messages.push({ role: 'tool', tool_call_id: tc.id, content: `[hook blocked] ${reason}` });
-            callbacks.onToolEnd?.(tc.name, `[hook blocked] ${reason}`, true);
-            continue;
-          }
-
-          callbacks.onToolStart?.(tc.name, tc.arguments);
-
-          const toolRes = await executeTool(tc.id, tc.name, tc.arguments, {
-            cwd: this.cwd,
-            signal,
-            onOutput: (chunk) => {
-              callbacks.onToolOutput?.(chunk);
-              const lastLine = chunk.trim().split('\n').filter(Boolean).pop();
-              if (lastLine) {
-                callbacks.onStatus?.(`Executing ${tc.name}: ${lastLine.slice(0, 35)}`);
-              }
-            },
-          });
-
-          callbacks.onToolEnd?.(tc.name, toolRes.output, toolRes.isError, toolRes.diff);
-
-          let toolMessageContent = toolRes.output;
-          if (!toolRes.isError && (tc.name === 'write' || tc.name === 'edit')) {
-            const targetPath = tc.arguments?.path || '';
-            if (
-              !targetPath.endsWith('AGENTS.md') &&
-              !targetPath.endsWith('CLAUDE.md') &&
-              !targetPath.endsWith('PROJECT.md')
-            ) {
-              toolMessageContent += '\n\n[PROTOCOL REMINDER: You modified project code. You must also update AGENTS.md (under ## 📝 Changelog & Code Modifications) with the details of your changes before completing your task!]';
-            }
-          }
-
-          const post = runHook('post-tool', tc.name, {
-            tool_input: tc.arguments,
-            is_error: toolRes.isError,
-          });
-          if (post.output.trim()) {
-            toolMessageContent += `\n\n[hook] ${post.output.trim()}`;
-          }
-
-          this.messages.push({
-            role: 'tool',
-            name: tc.name,
-            tool_call_id: tc.id,
-            content: toolMessageContent,
-          });
-        }
-
-        // After tool calls, inject any steering messages queued during tool execution
-        if (this.steeringQueue.length > 0) {
-          const steerMsgs: string[] = [];
-          while (this.steeringQueue.length > 0) {
-            steerMsgs.push(this.steeringQueue.shift()!);
-          }
-          if (steerMsgs.length > 0) {
-            this.messages.push({ role: 'user', content: steerMsgs.join('\n\n') });
-          }
-        }
+      await this.ompAgent.prompt(prompt);
+      if (this.activeError && !signal?.aborted) {
+        throw new Error(this.activeError);
       }
     } finally {
+      signal?.removeEventListener('abort', onAbort);
       this.isRunningTurn = false;
-      this.currentStepAbortController = null;
+      this.activeCallbacks = null;
     }
 
-    // Auto-sync session to Model Aggregator web app in background
     if (this.autoSync) {
       void relay.syncSessionToWeb({
         id: this.sessionId,
         title: prompt.slice(0, 50),
-        history: this.messages,
+        history: this.getMessages(),
       });
     }
 
-    return finalResponse;
+    return this.activeResponse;
+  }
+
+  private handleOmpEvent(event: AgentEvent): void {
+    const callbacks = this.activeCallbacks;
+    if (!callbacks) return;
+
+    switch (event.type) {
+      case 'agent_start':
+        callbacks.onStatus?.('🧈 Whipping up solution...');
+        break;
+      case 'message_start':
+      case 'message_end':
+        if (event.message.role === 'user' && event.message.steering) {
+          const text = textFromContent(event.message.content).trim();
+          const index = this.steeringQueue.indexOf(text);
+          if (index >= 0) this.steeringQueue.splice(index, 1);
+        }
+        if (event.type === 'message_end' && event.message.role === 'assistant') {
+          const text = textFromContent(event.message.content);
+          if (text) this.activeResponse = text;
+          if (event.message.stopReason === 'error') {
+            this.activeError = event.message.errorMessage || 'Relay model request failed';
+          }
+        }
+        break;
+      case 'message_update': {
+        const streamed = event.assistantMessageEvent;
+        if (streamed.type === 'text_delta') {
+          this.activeResponse += streamed.delta;
+          callbacks.onToken?.(streamed.delta);
+        } else if (streamed.type === 'thinking_delta') {
+          callbacks.onReasoning?.(streamed.delta);
+        }
+        break;
+      }
+      case 'tool_execution_start':
+        callbacks.onToolStart?.(event.toolName, event.args || {});
+        break;
+      case 'tool_execution_update': {
+        const text = textFromContent(event.partialResult?.content);
+        if (text) callbacks.onToolOutput?.(text);
+        break;
+      }
+      case 'tool_execution_end': {
+        const output = textFromContent(event.result?.content);
+        const diff = event.result?.details?.diff;
+        callbacks.onToolEnd?.(event.toolName, output, event.isError || event.result?.isError, diff);
+        break;
+      }
+      case 'turn_end':
+        if (event.message.role === 'assistant' && event.message.stopReason === 'error') {
+          this.activeError = event.message.errorMessage || 'Relay model request failed';
+        }
+        break;
+      case 'agent_end':
+        callbacks.onStatus?.('Task complete.');
+        break;
+    }
+  }
+
+  private recoverTextToolCalls(message: AssistantMessage): void {
+    const text = textFromContent(message.content);
+    if (!text) return;
+    const parsed = extractToolCallsFromContent(text);
+    if (parsed.toolCalls.length === 0) return;
+
+    const preserved = message.content.filter((block) => block.type !== 'text');
+    if (parsed.cleanedContent) preserved.unshift({ type: 'text', text: parsed.cleanedContent });
+    for (const call of parsed.toolCalls) {
+      preserved.push({ type: 'toolCall', id: call.id, name: call.name, arguments: call.arguments });
+    }
+    message.content = preserved;
+    message.stopReason = 'toolUse';
+  }
+
+  private decorateToolResult(
+    toolName: string,
+    result: AgentToolResult,
+    args: Record<string, unknown>,
+  ): { content?: AgentToolResult['content']; details?: unknown; isError?: boolean } | undefined {
+    const output = textFromContent(result.content);
+    let extra = '';
+    if (!result.isError && (toolName === 'write' || toolName === 'edit')) {
+      const targetPath = typeof args.path === 'string' ? args.path : '';
+      if (!targetPath.endsWith('AGENTS.md') && !targetPath.endsWith('CLAUDE.md') && !targetPath.endsWith('PROJECT.md')) {
+        extra += '\n\n[PROTOCOL REMINDER: You modified project code. You must also update AGENTS.md (under ## 📝 Changelog & Code Modifications) with the details of your changes before completing your task!]';
+      }
+    }
+
+    const post = runHook('post-tool', toolName, { tool_input: args, is_error: result.isError });
+    if (post.output.trim()) extra += `\n\n[hook] ${post.output.trim()}`;
+    if (!extra) return undefined;
+
+    return {
+      content: [{ type: 'text', text: `${output}${extra}` }],
+      details: result.details,
+      isError: result.isError,
+    };
   }
 }

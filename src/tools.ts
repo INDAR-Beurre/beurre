@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import type { AgentTool, AgentToolResult } from '@oh-my-pi/pi-agent-core';
+import type { TSchema } from '@oh-my-pi/pi-ai';
 import { relay } from './relay.ts';
 import { runNamedSubagent } from './subagents.ts';
 import { generateDiffCard } from './diff.ts';
@@ -27,6 +29,17 @@ export interface ToolResult {
   isError?: boolean;
   diff?: string;
 }
+
+export interface OmpToolHooks {
+  onOutput?: (chunk: string) => void;
+}
+
+/** File extension for a generated image, keyed by the MIME type the provider returned. */
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+};
 
 export const BEURRE_TOOLS: ToolDefinition[] = [
   {
@@ -140,6 +153,36 @@ export const BEURRE_TOOLS: ToolDefinition[] = [
     },
   },
 ];
+
+/**
+ * Adapt Beurre's intentionally tiny tool surface to OMP's agent-core
+ * contract. This keeps the OMP loop, schema validation, native tool calls,
+ * and steering machinery while avoiding the full omp coding-agent bundle.
+ */
+export function createOmpTools(cwd: string, getHooks: () => OmpToolHooks = () => ({})): AgentTool[] {
+  return BEURRE_TOOLS.map((definition) => {
+    const name = definition.function.name;
+    return {
+      name,
+      label: name,
+      description: definition.function.description,
+      parameters: definition.function.parameters as TSchema,
+      execute: async (toolCallId: string, params: unknown, signal?: AbortSignal): Promise<AgentToolResult> => {
+        const args = params && typeof params === 'object' ? (params as Record<string, any>) : {};
+        const result = await executeTool(toolCallId, name, args, {
+          cwd,
+          signal,
+          onOutput: (chunk) => getHooks().onOutput?.(chunk),
+        });
+        return {
+          content: [{ type: 'text', text: result.output }],
+          ...(result.diff ? { details: { diff: result.diff } } : {}),
+          ...(result.isError ? { isError: true } : {}),
+        };
+      },
+    } as AgentTool;
+  });
+}
 
 export function truncateLogOutput(text: string, headCount = 50, tailCount = 150): string {
   const lines = text.split('\n');
@@ -469,39 +512,8 @@ export async function executeTool(
 
       case 'generate_image': {
         const prompt = args.prompt;
-        const relPath = args.outputPath || `assets/image_${Date.now()}.png`;
-        const absPath = path.resolve(ctx.cwd, relPath);
-        const parentDir = path.dirname(absPath);
-        if (!fs.existsSync(parentDir)) {
-          fs.mkdirSync(parentDir, { recursive: true });
-        }
-
         const res = await relay.generateImage(prompt, { size: args.size });
-        if (res.b64) {
-          fs.writeFileSync(absPath, Buffer.from(res.b64, 'base64'));
-          return {
-            tool_call_id: toolCallId,
-            name,
-            output: `Successfully generated image and saved to: ${relPath}\nPrompt: "${prompt}"`,
-          };
-        } else if (res.url) {
-          try {
-            const imgRes = await fetch(res.url);
-            const arrayBuffer = await imgRes.arrayBuffer();
-            fs.writeFileSync(absPath, Buffer.from(arrayBuffer));
-            return {
-              tool_call_id: toolCallId,
-              name,
-              output: `Successfully generated image and saved to: ${relPath}\nPrompt: "${prompt}"`,
-            };
-          } catch {
-            return {
-              tool_call_id: toolCallId,
-              name,
-              output: `Generated image URL: ${res.url}\n(Failed to download locally to ${relPath})`,
-            };
-          }
-        } else {
+        if (!res.b64) {
           return {
             tool_call_id: toolCallId,
             name,
@@ -509,6 +521,20 @@ export async function executeTool(
             isError: true,
           };
         }
+        // Providers often return JPEG, so the default name follows the MIME type rather than assuming PNG.
+        const ext = IMAGE_EXTENSIONS[res.mimeType ?? ''] ?? 'png';
+        const relPath = args.outputPath || `assets/image_${Date.now()}.${ext}`;
+        const absPath = path.resolve(ctx.cwd, relPath);
+        const parentDir = path.dirname(absPath);
+        if (!fs.existsSync(parentDir)) {
+          fs.mkdirSync(parentDir, { recursive: true });
+        }
+        fs.writeFileSync(absPath, Buffer.from(res.b64, 'base64'));
+        return {
+          tool_call_id: toolCallId,
+          name,
+          output: `Successfully generated image and saved to: ${relPath}\nPrompt: "${prompt}"`,
+        };
       }
 
       default:
